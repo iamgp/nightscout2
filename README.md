@@ -17,7 +17,7 @@ consensus-standard AGP reports.
 |---|---|
 | **Nightscout API v1** | `entries`, `treatments`, `devicestatus`, `profile`, `food`, `status`, `verifyauth`, `/pebble`, with Mongo-style `find[field][$op]` queries and de-duplication on resend |
 | **Nightscout API v3** | CRUD, search, incremental `history` sync, `lastModified` and JWT authorization: what AndroidAPS's NSClient v3 uses |
-| **Live web app** | Current glucose, trend, delta, IOB/COB/pump/phone status, a 3–24h chart with treatments, and treatment logging. Updates instantly over Server-Sent Events. Installable as a PWA, with light and dark themes |
+| **Live web app** | Current glucose, trend, delta, IOB/COB/pump/phone status, a 3–24h chart with treatments, glucose forecasts from Loop, Trio and AndroidAPS, a basal lane with temp basals, and treatment logging. Updates instantly over Server-Sent Events. Installable as a PWA, with light and dark themes |
 | **Server-side alerts** | Urgent low, low, predicted low, high, urgent high, stale and urgent stale. Snooze from any device |
 | **Push notifications** | Anyone signed in, followers included, can get alerts on their own phone or computer with Web Push: no extra app or account. Admins can also send to [ntfy](https://ntfy.sh), Pushover (emergency priority for urgent alerts) or a webhook |
 | **Escalation** | Each notification target can wait N minutes before it fires, e.g. your phone first, then a partner after 15 minutes |
@@ -181,6 +181,6 @@ The code layout:
 
 ## Roadmap
 
-- Basal, IOB and COB curves on the chart
+- IOB and COB curves over time, and profile switches on the basal lane
 - Clinician PDF export of the AGP report
 - Postgres as an alternative store
