@@ -1,0 +1,57 @@
+# Development tooling. Install mise (https://mise.jdx.dev), then:
+#   mise install       # Go and Node at the versions below
+#   mise run dev       # run Tideline locally on :8080
+#   mise tasks         # list everything else
+
+[tools]
+go = "1.26.0"
+node = "22"
+
+[env]
+# Development defaults only. Production configuration comes from the host.
+TIDELINE_API_SECRET = "dev-secret-change-me"
+TIDELINE_DB = "{{config_root}}/tideline-dev.db"
+TIDELINE_URL = "http://localhost:8080"
+
+[tasks.dev]
+description = "Run Tideline locally with debug logging"
+env = { TIDELINE_LOG_LEVEL = "debug" }
+run = "go run ./cmd/tideline"
+
+[tasks.seed]
+description = "Load 14 days of synthetic data into the running dev server"
+run = "node scripts/seed.js"
+
+[tasks.test]
+description = "Run the Go tests with the race detector"
+run = "go test -race ./..."
+
+[tasks.lint]
+description = "Check formatting, vet Go, and syntax-check the web app"
+run = [
+  'test -z "$(gofmt -l .)" || { echo "gofmt needed:"; gofmt -l .; exit 1; }',
+  "go vet ./...",
+  "node --check web/static/app.js",
+  "node --check web/static/sw.js",
+  "node --check scripts/seed.js",
+]
+
+[tasks.fmt]
+description = "Format Go code"
+run = "gofmt -w ."
+
+[tasks.check]
+description = "Everything CI runs, except the Docker build"
+depends = ["lint", "test"]
+
+[tasks.build]
+description = "Build a static binary into bin/"
+run = 'CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o bin/tideline ./cmd/tideline'
+
+[tasks.docker]
+description = "Build the Docker image"
+run = 'docker build --build-arg VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev) -t tideline .'
+
+[tasks.reset-dev-db]
+description = "Delete the local development database"
+run = 'rm -f "$TIDELINE_DB" "$TIDELINE_DB-shm" "$TIDELINE_DB-wal"'

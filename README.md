@@ -26,12 +26,19 @@ consensus-standard AGP reports.
 
 ## Run it
 
+With [mise](https://mise.jdx.dev), which installs the right Go and Node:
+
 ```sh
-export TIDELINE_API_SECRET='a-long-random-secret'
-go run ./cmd/tideline            # or: docker compose up -d
+mise install
+mise run dev       # http://localhost:8080, sign in with dev-secret-change-me
+mise run seed      # optional: 14 days of synthetic data to look at
 ```
 
-Open http://localhost:8080 and sign in with your API secret.
+Without mise you need Go 1.26:
+
+```sh
+TIDELINE_API_SECRET='a-long-random-secret' go run ./cmd/tideline
+```
 
 ### Docker
 
@@ -119,9 +126,20 @@ Nightscout-style `api-secret` header.
 
 ## Development
 
-```sh
-go test -race ./...
-```
+Tasks are defined in `mise.toml` (run `mise tasks` to list them):
+
+| | |
+|---|---|
+| `mise run dev` | Run locally with debug logging, using `tideline-dev.db` |
+| `mise run seed` | Load synthetic data into the running dev server |
+| `mise run check` | Lint and test: the same as CI |
+| `mise run test` | `go test -race ./...` |
+| `mise run fmt` | Format Go code |
+| `mise run build` | Build a static binary into `bin/` |
+| `mise run docker` | Build the Docker image |
+| `mise run reset-dev-db` | Delete the dev database |
+
+The dev API secret in `mise.toml` is for local use only.
 
 The code layout:
 
