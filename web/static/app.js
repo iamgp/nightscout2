@@ -389,9 +389,6 @@
     const prev = state.seenAlerts;
     state.alerts = list || [];
     const now = new Set(state.alerts.map((a) => a.kind));
-    for (const a of state.alerts) {
-      if (!prev.has(a.kind) && !a.snoozedUntil) browserNotify(a);
-    }
     state.seenAlerts = now;
     renderAlerts();
   }
@@ -461,19 +458,121 @@
     updateDeviceButtons();
   }
 
-  function browserNotify(a) {
-    if (!('Notification' in window) || Notification.permission !== 'granted' || !document.hidden) return;
-    try {
-      new Notification(a.title, { body: alertText(a), tag: 'tideline-' + a.kind, renotify: true, requireInteraction: a.level === 'urgent' });
-    } catch { /* some platforms only allow notifications from a service worker */ }
-  }
-
   function updateDeviceButtons() {
     $('#sound-toggle').textContent = state.sound ? 'Alarm sound on (tap to turn off)' : 'Enable alarm sound';
-    const n = $('#notify-toggle');
-    if (!('Notification' in window)) { n.hidden = true; return; }
-    n.textContent = Notification.permission === 'granted' ? 'Browser notifications on' : 'Enable browser notifications';
-    n.disabled = Notification.permission === 'granted' || Notification.permission === 'denied';
+  }
+
+  // ---------------------------------------------------------------------------
+  // Web Push: alerts delivered to this device by the server
+
+  const pushSupported = () => 'serviceWorker' in navigator && 'PushManager' in window && 'Notification' in window;
+  const isIOS = () => /iPad|iPhone|iPod/.test(navigator.userAgent) || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1);
+  const isStandalone = () => window.matchMedia('(display-mode: standalone)').matches || navigator.standalone === true;
+
+  function b64ToBytes(s) {
+    const pad = '='.repeat((4 - (s.length % 4)) % 4);
+    const raw = atob((s + pad).replace(/-/g, '+').replace(/_/g, '/'));
+    return Uint8Array.from(raw, (c) => c.charCodeAt(0));
+  }
+
+  function deviceName() {
+    const ua = navigator.userAgent;
+    const os = /iPhone/.test(ua) ? 'iPhone' : /iPad/.test(ua) || isIOS() ? 'iPad' : /Android/.test(ua) ? 'Android'
+      : /Mac/.test(ua) ? 'Mac' : /Windows/.test(ua) ? 'Windows' : /Linux/.test(ua) ? 'Linux' : 'Device';
+    const br = /Edg\//.test(ua) ? 'Edge' : /Firefox\//.test(ua) ? 'Firefox' : /Chrome\//.test(ua) ? 'Chrome' : /Safari\//.test(ua) ? 'Safari' : '';
+    return br ? `${os} · ${br}` : os;
+  }
+
+  async function currentPushSubscription() {
+    if (!pushSupported()) return null;
+    const reg = await navigator.serviceWorker.getRegistration();
+    return reg ? reg.pushManager.getSubscription() : null;
+  }
+
+  async function renderPush() {
+    const status = $('#push-status');
+    const enable = $('#push-enable'), test = $('#push-test'), disable = $('#push-disable');
+    const setStatus = (msg, cls = '') => { status.textContent = msg; status.className = 'small ' + cls; };
+    if (!pushSupported()) {
+      enable.disabled = true;
+      if (isIOS() && !isStandalone()) {
+        setStatus('On iPhone and iPad, first add Tideline to your Home Screen (Share → Add to Home Screen), then open it from there and come back here.');
+      } else {
+        setStatus("This browser can't receive push notifications.");
+      }
+      return;
+    }
+    if (Notification.permission === 'denied') {
+      enable.disabled = true;
+      setStatus('Notifications are blocked for this site. Allow them in your browser settings, then reload.', 'error');
+      return;
+    }
+    const sub = await currentPushSubscription();
+    const id = store.get('pushId');
+    const on = !!(sub && id);
+    enable.textContent = on ? 'Update alert settings' : 'Get alerts on this device';
+    enable.disabled = false;
+    test.hidden = !on;
+    disable.hidden = !on;
+    if (on) {
+      $('#push-level').value = store.get('pushLevel', 'warn');
+      $('#push-delay').value = store.get('pushDelay', '0');
+    }
+    setStatus(on ? '✓ This device gets alerts.' : 'This device is not getting alerts.', on ? 'ok' : 'muted');
+    loadPushDevices();
+  }
+
+  async function loadPushDevices() {
+    let devices = [];
+    try { devices = await api('/api/tl/v1/push/subscriptions'); } catch { return; }
+    const wrap = $('#push-devices-wrap');
+    wrap.hidden = !devices.length;
+    const myId = store.get('pushId');
+    const lvl = { warn: 'All alerts', urgent: 'Urgent only' };
+    $('#push-devices').innerHTML = `<thead><tr><th>Device</th>${state.me.isAdmin ? '<th>Person</th>' : ''}<th>Alerts</th><th>Delay</th><th>Last delivered</th><th></th></tr></thead><tbody>` +
+      devices.map((d) => `<tr>
+        <td>${esc(d.name)}${d.id === myId ? ' <span class="badge">This device</span>' : ''}${d.failures > 2 ? ' <span class="badge off">Failing</span>' : ''}</td>
+        ${state.me.isAdmin ? `<td>${esc(d.owner)}</td>` : ''}
+        <td>${esc(lvl[d.minLevel] || d.minLevel)}</td>
+        <td>${d.escalateAfterMinutes ? esc(d.escalateAfterMinutes + ' min') : 'None'}</td>
+        <td>${d.lastSuccessAt ? esc(ago(d.lastSuccessAt)) : '<span class="muted">Not yet</span>'}</td>
+        <td><button class="small danger" data-push-remove="${esc(d.id)}">Remove</button></td>
+      </tr>`).join('') + '</tbody>';
+  }
+
+  async function enablePush() {
+    const status = $('#push-status');
+    try {
+      const perm = await Notification.requestPermission();
+      if (perm !== 'granted') { status.textContent = 'Notifications were not allowed.'; return; }
+      const reg = await navigator.serviceWorker.ready;
+      let sub = await reg.pushManager.getSubscription();
+      if (!sub) {
+        const { publicKey } = await api('/api/tl/v1/push/key');
+        sub = await reg.pushManager.subscribe({ userVisibleOnly: true, applicationServerKey: b64ToBytes(publicKey) });
+      }
+      const level = $('#push-level').value, delay = $('#push-delay').value;
+      const saved = await api('/api/tl/v1/push/subscriptions', {
+        method: 'POST',
+        body: { subscription: sub.toJSON(), name: deviceName(), minLevel: level, escalateAfterMinutes: Number(delay) },
+      });
+      store.set('pushId', saved.id);
+      store.set('pushLevel', level);
+      store.set('pushDelay', delay);
+    } catch (e) {
+      status.textContent = 'Could not turn on alerts: ' + e.message;
+      status.className = 'small error';
+      return;
+    }
+    renderPush();
+  }
+
+  async function disablePush() {
+    const id = store.get('pushId');
+    try { if (id) await api('/api/tl/v1/push/subscriptions/' + encodeURIComponent(id), { method: 'DELETE' }); } catch { /* already gone */ }
+    try { const sub = await currentPushSubscription(); if (sub) await sub.unsubscribe(); } catch { /* ignore */ }
+    store.del('pushId');
+    renderPush();
   }
 
   // ---------------------------------------------------------------------------
@@ -788,6 +887,7 @@
     $('#xdrip-url').textContent = `${location.protocol}//YOUR-TOKEN@${location.host}/api/v1/`;
     $('#version').textContent = `Tideline ${state.me.version} · signed in as ${state.me.principal.name} (${state.me.principal.role})`;
     updateDeviceButtons();
+    renderPush();
 
     if (admin) {
       state.editNotifiers = (s.notifiers || []).map((n) => ({ ...n }));
@@ -1065,9 +1165,26 @@
     $('#sound-toggle').addEventListener('click', () => {
       if (state.sound) { state.sound = false; store.set('sound', '0'); updateDeviceButtons(); } else enableSound();
     });
-    $('#notify-toggle').addEventListener('click', async () => {
-      if ('Notification' in window) await Notification.requestPermission();
-      updateDeviceButtons();
+    $('#push-enable').addEventListener('click', enablePush);
+    $('#push-disable').addEventListener('click', disablePush);
+    $('#push-test').addEventListener('click', async () => {
+      const s = $('#push-status');
+      try {
+        await api(`/api/tl/v1/push/subscriptions/${encodeURIComponent(store.get('pushId'))}/test`, { method: 'POST' });
+        s.textContent = 'Test sent. It should arrive in a few seconds.';
+      } catch (e) {
+        s.textContent = 'Test failed: ' + e.message;
+        if (e.status === 404) { store.del('pushId'); renderPush(); }
+      }
+    });
+    $('#push-devices').addEventListener('click', async (e) => {
+      const b = e.target.closest('button[data-push-remove]');
+      if (!b || !confirm('Stop sending alerts to this device?')) return;
+      const id = b.dataset.pushRemove;
+      try {
+        await api('/api/tl/v1/push/subscriptions/' + encodeURIComponent(id), { method: 'DELETE' });
+        if (id === store.get('pushId')) await disablePush(); else loadPushDevices();
+      } catch (err) { alert(err.message); }
     });
     $('#logout').addEventListener('click', () => signOut(true));
 

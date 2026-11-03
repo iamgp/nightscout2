@@ -161,6 +161,23 @@ var migrations = []string{
 	);
 	CREATE INDEX ns_settings_modified ON ns_settings(srv_modified);
 	`,
+	// 2: Web Push device registrations.
+	`
+	CREATE TABLE push_subscriptions (
+		id              TEXT PRIMARY KEY,
+		endpoint        TEXT NOT NULL UNIQUE,
+		p256dh          TEXT NOT NULL,
+		auth            TEXT NOT NULL,
+		token_id        TEXT,
+		owner           TEXT NOT NULL,
+		name            TEXT NOT NULL,
+		min_level       TEXT NOT NULL,
+		escalate_after  INTEGER NOT NULL DEFAULT 0,
+		created_at      INTEGER NOT NULL,
+		last_success_at INTEGER,
+		failures        INTEGER NOT NULL DEFAULT 0
+	);
+	`,
 }
 
 // Open opens (creating if needed) the database at path. Use ":memory:" for tests.

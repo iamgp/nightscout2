@@ -61,7 +61,7 @@ type AlertSettings struct {
 type Notifier struct {
 	ID                   string `json:"id"`
 	Name                 string `json:"name"`
-	Type                 string `json:"type"` // ntfy | webhook | pushover
+	Type                 string `json:"type"` // ntfy | webhook | pushover (webpush is used internally for registered devices)
 	URL                  string `json:"url,omitempty"`
 	Token                string `json:"token,omitempty"`
 	User                 string `json:"user,omitempty"`

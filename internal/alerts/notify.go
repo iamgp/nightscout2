@@ -9,8 +9,10 @@ import (
 	"net/http"
 	"net/url"
 	"strings"
+	"time"
 
 	"github.com/iamgp/tideline/internal/settings"
+	"github.com/iamgp/tideline/internal/webpush"
 )
 
 // HTTPSender delivers notifications over HTTP to ntfy, Pushover or a webhook.
@@ -20,6 +22,13 @@ type HTTPSender struct {
 	PushoverURL string        // override for tests
 	SiteName    func() string
 	BaseURL     string // public URL of this Tideline, linked from notifications
+
+	// Push delivers to devices registered for Web Push. For those notifiers,
+	// URL is the push endpoint, Token the p256dh key and User the auth secret.
+	Push *webpush.Client
+	// OnPushResult is told about each Web Push delivery, so dead
+	// subscriptions can be removed (err is webpush.ErrGone).
+	OnPushResult func(endpoint string, err error)
 }
 
 // FormatGlucose renders a mg/dL value in the given units.
@@ -63,6 +72,9 @@ func (h *HTTPSender) Send(ctx context.Context, n settings.Notifier, a Alert, res
 		client = http.DefaultClient
 	}
 	title, body := h.text(a, resolved)
+	if n.Type == "webpush" {
+		return h.sendPush(ctx, n, a, resolved, title, body)
+	}
 	var req *http.Request
 	var err error
 	switch n.Type {
@@ -145,4 +157,34 @@ func (h *HTTPSender) Send(ctx context.Context, n settings.Notifier, a Alert, res
 		return fmt.Errorf("%s returned %s: %s", n.Type, resp.Status, strings.TrimSpace(string(msg)))
 	}
 	return nil
+}
+
+func (h *HTTPSender) sendPush(ctx context.Context, n settings.Notifier, a Alert, resolved bool, title, body string) error {
+	if h.Push == nil {
+		return fmt.Errorf("web push is not configured")
+	}
+	link := "./#now"
+	if h.BaseURL != "" {
+		link = h.BaseURL + "/#now"
+	}
+	payload, _ := json.Marshal(map[string]any{
+		"title":    title,
+		"body":     body,
+		"kind":     a.Kind,
+		"level":    a.Level,
+		"resolved": resolved,
+		"tag":      "tideline-" + a.Kind,
+		"url":      link,
+	})
+	// Alerts are only useful while current, and must not wait for a phone to
+	// leave power-saving mode.
+	urgency := webpush.UrgencyHigh
+	if resolved {
+		urgency = webpush.UrgencyNormal
+	}
+	err := h.Push.Send(ctx, webpush.Subscription{Endpoint: n.URL, P256dh: n.Token, Auth: n.User}, payload, 30*time.Minute, urgency)
+	if h.OnPushResult != nil {
+		h.OnPushResult(n.URL, err)
+	}
+	return err
 }

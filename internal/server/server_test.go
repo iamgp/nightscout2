@@ -35,7 +35,7 @@ type env struct {
 	srv *Server
 }
 
-func newEnv(t *testing.T, publicRead bool) *env {
+func newEnv(t *testing.T, publicRead bool, opts ...func(*Options)) *env {
 	t.Helper()
 	st, err := store.Open(":memory:")
 	if err != nil {
@@ -46,7 +46,11 @@ func newEnv(t *testing.T, publicRead bool) *env {
 	if err != nil {
 		t.Fatal(err)
 	}
-	srv := New(st, auth.New(secret, st, publicRead), sm, Options{Version: "test"})
+	o := Options{Version: "test"}
+	for _, f := range opts {
+		f(&o)
+	}
+	srv := New(st, auth.New(secret, st, publicRead), sm, o)
 	ts := httptest.NewServer(srv.Handler())
 	t.Cleanup(ts.Close)
 	return &env{t: t, ts: ts, st: st, srv: srv}
