@@ -23,6 +23,12 @@
   --carbs: #eb6834;
   --target: rgba(12, 163, 12, 0.08);
 
+  /* Forecast series: reference categorical slots 3, 4, 5, 7 (validated with insulin and carbs) */
+  --fc-1: #1baf7a;
+  --fc-2: #eda100;
+  --fc-3: #e87ba4;
+  --fc-4: #6250d6;
+
   /* AGP sequential blue */
   --agp-outer: #b7d3f6;
   --agp-inner: #6da7ec;
@@ -48,6 +54,10 @@
     --axis: #6f7e91;
     --insulin: #3987e5;
     --carbs: #d95926;
+    --fc-1: #199e70;
+    --fc-2: #c98500;
+    --fc-3: #d55181;
+    --fc-4: #9085e9;
     --target: rgba(12, 163, 12, 0.13);
     --agp-outer: #184f95;
     --agp-inner: #2f6fc4;
@@ -70,6 +80,10 @@
   --axis: #6f7e91;
   --insulin: #3987e5;
   --carbs: #d95926;
+  --fc-1: #199e70;
+  --fc-2: #c98500;
+  --fc-3: #d55181;
+  --fc-4: #9085e9;
   --target: rgba(12, 163, 12, 0.13);
   --agp-outer: #184f95;
   --agp-inner: #2f6fc4;
@@ -199,6 +213,16 @@ button.small { padding: 5px 10px; font-size: 0.85rem; }
 .chart .threshold { stroke: var(--axis); stroke-width: 1; stroke-dasharray: 3 4; }
 .chart .crosshair { stroke: var(--text-3); stroke-width: 1; }
 .chart .empty { fill: var(--text-3); font-size: 13px; }
+.chart .forecast { fill: none; stroke-width: 2; stroke-dasharray: 5 4; stroke-linecap: round; }
+.chart .fc-label { fill: var(--text-2); font-size: 11px; font-weight: 600; paint-order: stroke; stroke: var(--surface); stroke-width: 3px; }
+.chart .future { fill: var(--surface-2); opacity: 0.6; }
+.chart .nowline { stroke: var(--text-3); stroke-width: 1; }
+.chart .basal-fill { fill: var(--insulin); opacity: 0.22; }
+.chart .basal-line { fill: none; stroke: var(--insulin); stroke-width: 1.5; }
+.chart .basal-sched { fill: none; stroke: var(--text-3); stroke-width: 1; stroke-dasharray: 2 3; }
+.sw-line { height: 3px; border-radius: 2px; }
+.sw-basal { background: color-mix(in srgb, var(--insulin) 30%, transparent); border-top: 2px solid var(--insulin); border-radius: 2px; }
+.tooltip .sw { width: 10px; vertical-align: middle; }
 .tooltip {
   position: fixed; z-index: 50; pointer-events: none;
   background: var(--surface); color: var(--text); border: 1px solid var(--border);

@@ -61,9 +61,34 @@ treatments.push({ eventType: 'Note', notes: 'Football practice', created_at: new
   };
   for (let i = 0; i < entries.length; i += 500) await post('/api/v1/entries', entries.slice(i, i + 500));
   await post('/api/v1/treatments', treatments);
+  // A basal profile and some temp basals, as a loop would upload.
+  await post('/api/v1/profile', {
+    defaultProfile: 'Default', startDate: new Date(start).toISOString(),
+    store: { Default: {
+      dia: 6, units: 'mg/dl', timezone: Intl.DateTimeFormat().resolvedOptions().timeZone,
+      basal: [{ time: '00:00', value: 0.6 }, { time: '04:00', value: 0.8 }, { time: '09:00', value: 0.7 }, { time: '18:00', value: 0.75 }, { time: '22:00', value: 0.6 }],
+    } },
+  });
+  const temps = [];
+  for (let t = now - 24 * 60 * MIN; t < now; t += 30 * MIN) {
+    if (rnd() < 0.45) {
+      temps.push({ eventType: 'Temp Basal', absolute: Math.round(rnd() * 16) / 10, rate: undefined, duration: 30, created_at: new Date(t).toISOString(), enteredBy: 'Trio' });
+    }
+  }
+  await post('/api/v1/treatments', temps);
+
+  // Forecasts in the openaps format (Trio, AndroidAPS): 5-minute steps from now.
+  const last = entries[entries.length - 1].sgv;
+  const curve = (n, slope, curveTo) => Array.from({ length: n }, (_, i) => Math.round(last + slope * i + (curveTo - last - slope * n) * (i / n) ** 2));
   await post('/api/v1/devicestatus', {
     device: 'Trio', created_at: new Date(now).toISOString(),
-    openaps: { iob: { iob: 1.35 }, suggested: { COB: 12 } },
+    openaps: {
+      iob: { iob: 1.35 },
+      suggested: {
+        COB: 12, IOB: 1.35, timestamp: new Date(now).toISOString(),
+        predBGs: { IOB: curve(36, 0.4, 118), COB: curve(36, 1.2, 172), UAM: curve(30, 1.6, 205), ZT: curve(30, -0.2, 120) },
+      },
+    },
     pump: { reservoir: 86, battery: { percent: 72 } }, uploader: { battery: 64 },
   });
   console.log(`seeded ${entries.length} entries, ${treatments.length} treatments`);
