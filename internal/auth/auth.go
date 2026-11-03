@@ -191,3 +191,24 @@ func (a *Authenticator) touch(ctx context.Context, id string, now time.Time) {
 	a.mu.Unlock()
 	_ = a.tokens.TouchToken(ctx, id, now)
 }
+
+// PresentedCredential returns whatever credential the request carries
+// (API secret, token or JWT), or "" if none. It is used to recognise
+// credentials that have worked before, not to authenticate.
+func PresentedCredential(r *http.Request) string {
+	if v := r.Header.Get("api-secret"); v != "" {
+		return "s:" + strings.ToLower(v)
+	}
+	if v := r.URL.Query().Get("secret"); v != "" {
+		return "q:" + v
+	}
+	if h := r.Header.Get("Authorization"); strings.HasPrefix(h, "Bearer ") {
+		if v := strings.TrimSpace(strings.TrimPrefix(h, "Bearer ")); v != "" {
+			return "t:" + v
+		}
+	}
+	if v := r.URL.Query().Get("token"); v != "" {
+		return "t:" + v
+	}
+	return ""
+}

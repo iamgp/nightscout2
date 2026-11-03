@@ -92,6 +92,7 @@ Fly.io the public URL is detected automatically; elsewhere set
 | `TIDELINE_DB` | `tideline.db` | SQLite path |
 | `PORT` | `8080` | |
 | `TIDELINE_PUBLIC_URL` | detected on Railway and Fly.io | Linked from notifications |
+| `TIDELINE_CLIENT_IP_HEADER` | detected on Railway and Fly.io | Header carrying the real client IP from a reverse proxy you trust (`none` to use the connection address) |
 | `TIDELINE_RUN_AS` | `65532:65532` in the image | When started as root, take ownership of the data directory and run as this user |
 | `TIDELINE_PUBLIC_READ` | `false` | Let anyone with the URL view data (Nightscout's default) |
 | `TIDELINE_UNITS` | `mg/dl` | Initial units (`mg/dl` or `mmol`), changeable in Settings |
@@ -106,6 +107,21 @@ Fly.io the public URL is detected automatically; elsewhere set
 
 Thresholds, alerts and notification targets are configured in the web app
 under **Settings**.
+
+## Security
+
+- **Private by default.** Nothing is readable without a token or the API secret
+  unless you set `TIDELINE_PUBLIC_READ=true`.
+- **A token for each person and device**, with expiry, last-used time and
+  one-click revoke. Revoking a token also cuts off its JWTs and stops alerts
+  to its devices.
+- **Sign-in rate limiting.** Each address may fail to sign in 10 times, then
+  one attempt per minute. Credentials that have worked before still get
+  through a block, so an attacker sharing an address (a mobile carrier, an
+  office) can't lock out devices that are already set up. Blocks are
+  audit-logged.
+- **Audit log** of token, settings and deletion changes.
+- The container runs as an unprivileged user.
 
 ## Getting alerts on your phone
 
