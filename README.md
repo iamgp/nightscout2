@@ -15,7 +15,8 @@ consensus-standard AGP reports.
 
 | | |
 |---|---|
-| **Nightscout API v1** | `entries`, `treatments`, `devicestatus`, `profile`, `status`, `verifyauth`, `/pebble`, with Mongo-style `find[field][$op]` queries and de-duplication on resend |
+| **Nightscout API v1** | `entries`, `treatments`, `devicestatus`, `profile`, `food`, `status`, `verifyauth`, `/pebble`, with Mongo-style `find[field][$op]` queries and de-duplication on resend |
+| **Nightscout API v3** | CRUD, search, incremental `history` sync, `lastModified` and JWT authorization: what AndroidAPS's NSClient v3 uses |
 | **Live web app** | Current glucose, trend, delta, IOB/COB/pump/phone status, a 3–24h chart with treatments, and treatment logging. Updates instantly over Server-Sent Events. Installable as a PWA, with light and dark themes |
 | **Server-side alerts** | Urgent low, low, predicted low, high, urgent high, stale and urgent stale. Snooze from any device. Notifications via [ntfy](https://ntfy.sh), Pushover (emergency priority for urgent alerts) or a webhook |
 | **Escalation** | Each notification target can wait N minutes before it fires, e.g. your phone first, then a partner after 15 minutes |
@@ -81,6 +82,9 @@ access, then:
 - **Loop, Trio and other Nightscout uploaders**: set the site URL to
   `https://your-site` and paste the token into the **API secret** field.
   These apps send a SHA-1 of that field, and Tideline matches it to the token.
+- **AndroidAPS**: choose the **NSClient v3** plugin, set the URL to
+  `https://your-site` and paste the token as the **access token**. AndroidAPS
+  trades it for a short-lived JWT; revoking the token cuts it off immediately.
 - **Followers**: create a *Follower* token and share the link it gives you.
   Nightscout watch faces accept `?token=` too.
 
@@ -155,7 +159,6 @@ The code layout:
 
 ## Roadmap
 
-- Nightscout API v3, needed for AndroidAPS's NSClient v3
 - A LibreLinkUp bridge
 - Web Push, so phones get notified without ntfy
 - Basal, IOB and COB curves on the chart
