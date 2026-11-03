@@ -46,6 +46,9 @@ Configuration (environment):
   TIDELINE_PUBLIC_READ  "true" lets anyone with the URL view data (default false)
   TIDELINE_UNITS        initial display units: mg/dl or mmol (default mg/dl)
   TIDELINE_LOG_LEVEL    debug, info, warn or error (default info)
+  TIDELINE_BACKUP_URL   continuous backups via Litestream, e.g. s3://bucket/tideline
+  TIDELINE_BACKUP_ENDPOINT, TIDELINE_BACKUP_ACCESS_KEY_ID, TIDELINE_BACKUP_SECRET_ACCESS_KEY
+                        for S3-compatible storage such as Cloudflare R2
   DEXCOM_USERNAME, DEXCOM_PASSWORD, DEXCOM_REGION (us, ous, jp)
                         pull readings from Dexcom Share
   LIBRE_EMAIL, LIBRE_PASSWORD, LIBRE_REGION (optional), LIBRE_PATIENT_ID (optional)
@@ -121,6 +124,11 @@ func serve() error {
 	secret := env("TIDELINE_API_SECRET", "API_SECRET")
 	if len(secret) < 12 {
 		return errors.New("TIDELINE_API_SECRET must be set to at least 12 characters")
+	}
+	// With backups configured, hand over to Litestream, which restores if
+	// needed and then runs this command again as its supervised child.
+	if replaced, err := runUnderLitestream(log); replaced || err != nil {
+		return err
 	}
 	st, err := store.Open(dbPath())
 	if err != nil {
