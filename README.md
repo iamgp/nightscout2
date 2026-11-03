@@ -65,7 +65,7 @@ alerts) and checks `/healthz`.
 
 Run exactly one machine: the database is on that machine's volume. If you
 deploy by hand, use `fly deploy --ha=false`. Fly snapshots volumes daily and
-keeps them for 5 days.
+keeps them for 5 days; for continuous backups, set up [Backups](#backups).
 
 ### Railway
 
@@ -92,6 +92,10 @@ Fly.io the public URL is detected automatically; elsewhere set
 | `TIDELINE_DB` | `tideline.db` | SQLite path |
 | `PORT` | `8080` | |
 | `TIDELINE_PUBLIC_URL` | detected on Railway and Fly.io | Linked from notifications |
+| `TIDELINE_BACKUP_URL` | | Turns on continuous backups, e.g. `s3://bucket/tideline` (see [Backups](#backups)) |
+| `TIDELINE_BACKUP_ENDPOINT` | | S3-compatible endpoint, e.g. `https://<account-id>.r2.cloudflarestorage.com` |
+| `TIDELINE_BACKUP_ACCESS_KEY_ID` / `TIDELINE_BACKUP_SECRET_ACCESS_KEY` | | Storage credentials |
+| `TIDELINE_BACKUP_RETENTION` | `168h` | How far back point-in-time restores can go |
 | `TIDELINE_CLIENT_IP_HEADER` | detected on Railway and Fly.io | Header carrying the real client IP from a reverse proxy you trust (`none` to use the connection address) |
 | `TIDELINE_RUN_AS` | `65532:65532` in the image | When started as root, take ownership of the data directory and run as this user |
 | `TIDELINE_PUBLIC_READ` | `false` | Let anyone with the URL view data (Nightscout's default) |
@@ -107,6 +111,47 @@ Fly.io the public URL is detected automatically; elsewhere set
 
 Thresholds, alerts and notification targets are configured in the web app
 under **Settings**.
+
+## Backups
+
+Tideline can stream every change to Cloudflare R2 (or S3, Backblaze B2,
+Tigris, MinIO…) using [Litestream](https://litestream.io), which is built
+into the Docker image. Changes reach the bucket within about a second, and
+you can restore to any moment in the last 7 days.
+
+**Set up R2 (about 5 minutes)**
+
+1. In the Cloudflare dashboard, open **R2 → Create bucket** and name it, for
+   example, `tideline-backups`.
+2. Open **R2 → Manage API tokens → Create API token**. Give it **Object Read &
+   Write** on that bucket only. Note the **Access Key ID**, **Secret Access
+   Key** and the **S3 endpoint** (`https://<account-id>.r2.cloudflarestorage.com`).
+3. Set these on your Tideline:
+
+   ```sh
+   TIDELINE_BACKUP_URL=s3://tideline-backups/tideline
+   TIDELINE_BACKUP_ENDPOINT=https://<account-id>.r2.cloudflarestorage.com
+   TIDELINE_BACKUP_ACCESS_KEY_ID=...
+   TIDELINE_BACKUP_SECRET_ACCESS_KEY=...
+   ```
+
+   On Fly.io: `fly secrets set TIDELINE_BACKUP_URL=... TIDELINE_BACKUP_ENDPOINT=... TIDELINE_BACKUP_ACCESS_KEY_ID=... TIDELINE_BACKUP_SECRET_ACCESS_KEY=...`.
+   On Railway, add them as service variables.
+
+The logs show `starting continuous backups` when it's working.
+
+**Restoring.** If the database is missing when Tideline starts (a lost or new
+volume), it is restored from the bucket automatically. To go back to an earlier
+moment, for example to undo a bad import, stop Tideline and run inside the
+container (`fly ssh console` on Fly.io):
+
+```sh
+litestream restore -config /data/.litestream.yml -no-expand-env \
+  -timestamp 2026-11-01T08:00:00Z -o /data/restored.db /data/tideline.db
+```
+
+Then replace `/data/tideline.db` with `/data/restored.db` and start Tideline.
+Credentials are passed through the environment and never written to disk.
 
 ## Security
 
