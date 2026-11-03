@@ -40,9 +40,13 @@ run = [
 description = "Format Go code"
 run = "gofmt -w ."
 
+[tasks.cross]
+description = "Check that every release target compiles"
+run = 'for t in linux/amd64 linux/arm64 darwin/amd64 darwin/arm64 windows/amd64 windows/arm64; do GOOS=${t%/*} GOARCH=${t#*/} CGO_ENABLED=0 go build -o /dev/null ./cmd/tideline || exit 1; done'
+
 [tasks.check]
 description = "Everything CI runs, except the Docker build"
-depends = ["lint", "test"]
+depends = ["lint", "test", "cross"]
 
 [tasks.build]
 description = "Build a static binary into bin/"

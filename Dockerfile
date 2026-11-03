@@ -1,19 +1,26 @@
 # syntax=docker/dockerfile:1
-FROM golang:1.26-alpine AS build
+# Go cross-compiles for the target platform, so multi-arch images build
+# natively without emulation.
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS build
+ARG TARGETOS TARGETARCH
 WORKDIR /src
 COPY go.mod go.sum ./
 RUN go mod download
 COPY . .
 ARG VERSION=dev
-RUN CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/tideline ./cmd/tideline \
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go build -trimpath -ldflags="-s -w -X main.version=${VERSION}" -o /out/tideline ./cmd/tideline \
  && mkdir -p /out/data
 
 # Litestream provides continuous backups (enabled with TIDELINE_BACKUP_URL).
 # Built from source at a pinned release; the Go checksum database verifies it.
-FROM golang:1.26-alpine AS litestream
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS litestream
+ARG TARGETOS TARGETARCH
 ARG LITESTREAM_VERSION=v0.5.18
-RUN CGO_ENABLED=0 GOBIN=/out go install -trimpath -ldflags="-s -w" \
-    github.com/benbjohnson/litestream/cmd/litestream@${LITESTREAM_VERSION}
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH \
+    go install -trimpath -ldflags="-s -w" github.com/benbjohnson/litestream/cmd/litestream@${LITESTREAM_VERSION} \
+ && mkdir -p /out \
+ && cp "$(go env GOPATH)/bin/$( [ "$TARGETOS/$TARGETARCH" = "$(go env GOHOSTOS)/$(go env GOHOSTARCH)" ] && echo litestream || echo "${TARGETOS}_${TARGETARCH}/litestream")" /out/litestream
 
 FROM gcr.io/distroless/static-debian12
 COPY --from=build /out/tideline /tideline
