@@ -52,6 +52,10 @@ run = 'CGO_ENABLED=0 go build -trimpath -ldflags="-s -w -X main.version=$(git de
 description = "Build the Docker image"
 run = 'docker build --build-arg VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo dev) -t tideline .'
 
+[tasks."deploy:fly"]
+description = "Create and deploy a Tideline app on Fly.io (args: [app-name] [region])"
+run = "scripts/deploy-fly.sh"
+
 [tasks.reset-dev-db]
 description = "Delete the local development database"
 run = 'rm -f "$TIDELINE_DB" "$TIDELINE_DB-shm" "$TIDELINE_DB-wal"'

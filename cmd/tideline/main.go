@@ -59,6 +59,13 @@ func main() {
 		cmd, args = args[0], args[1:]
 	}
 	var err error
+	if cmd == "serve" || cmd == "import" || cmd == "token" {
+		// Before anything opens the database, so files are never left owned by root.
+		if err := dropPrivileges(dbPath()); err != nil {
+			fmt.Fprintln(os.Stderr, "error:", err)
+			os.Exit(1)
+		}
+	}
 	switch cmd {
 	case "serve":
 		err = serve()
@@ -137,7 +144,7 @@ func serve() error {
 	}
 	publicRead := strings.EqualFold(env("TIDELINE_PUBLIC_READ"), "true")
 	authn := auth.New(secret, st, publicRead)
-	publicURL := strings.TrimRight(env("TIDELINE_PUBLIC_URL"), "/")
+	publicURL := detectPublicURL()
 
 	push, err := loadPush(ctx, st, publicURL)
 	if err != nil {
@@ -255,6 +262,21 @@ func loadPush(ctx context.Context, st *store.Store, publicURL string) (*webpush.
 		subject = "https://github.com/iamgp/tideline"
 	}
 	return &webpush.Client{Keys: keys, Subject: subject, HTTP: &http.Client{Timeout: 15 * time.Second}}, nil
+}
+
+// detectPublicURL uses TIDELINE_PUBLIC_URL, or the URL the host assigns on
+// Railway and Fly.io, so notification links and Web Push work without setup.
+func detectPublicURL() string {
+	if u := env("TIDELINE_PUBLIC_URL"); u != "" {
+		return strings.TrimRight(u, "/")
+	}
+	if d := env("RAILWAY_PUBLIC_DOMAIN"); d != "" {
+		return "https://" + d
+	}
+	if app := env("FLY_APP_NAME"); app != "" {
+		return "https://" + app + ".fly.dev"
+	}
+	return ""
 }
 
 func firstNonEmpty(vs ...string) string {
