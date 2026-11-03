@@ -56,6 +56,7 @@ type Engine struct {
 	sender   Sender
 	log      *slog.Logger
 	now      func() time.Time
+	extra    func() []settings.Notifier
 
 	mu      sync.Mutex
 	active  map[string]*Alert
@@ -74,6 +75,18 @@ func New(data DataSource, s func() settings.Settings, publish func([]Alert), sen
 		active:  map[string]*Alert{},
 		snoozes: map[string]time.Time{},
 	}
+}
+
+// SetExtraNotifiers adds a source of notification targets beyond those in
+// settings, such as devices registered for Web Push.
+func (e *Engine) SetExtraNotifiers(f func() []settings.Notifier) { e.extra = f }
+
+func (e *Engine) notifiers(s settings.Settings) []settings.Notifier {
+	ns := s.Notifiers
+	if e.extra != nil {
+		ns = append(append([]settings.Notifier{}, ns...), e.extra()...)
+	}
+	return ns
 }
 
 // Run evaluates on an interval until ctx is cancelled.
@@ -242,6 +255,7 @@ func (e *Engine) Evaluate(ctx context.Context) {
 		return
 	}
 	now := e.now()
+	notifiers := e.notifiers(s)
 
 	type job struct {
 		n        settings.Notifier
@@ -266,7 +280,7 @@ func (e *Engine) Evaluate(ctx context.Context) {
 					familyActive = true
 				}
 			}
-			for _, n := range s.Notifiers {
+			for _, n := range notifiers {
 				if familyActive {
 					break
 				}
@@ -304,7 +318,7 @@ func (e *Engine) Evaluate(ctx context.Context) {
 		if a.Level == LevelUrgent {
 			repeat = time.Duration(s.Alerts.RepeatUrgentMinutes) * time.Minute
 		}
-		for _, n := range s.Notifiers {
+		for _, n := range notifiers {
 			if !n.Enabled || (n.MinLevel == LevelUrgent && a.Level != LevelUrgent) {
 				continue
 			}

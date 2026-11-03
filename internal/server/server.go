@@ -17,6 +17,7 @@ import (
 	"github.com/iamgp/tideline/internal/auth"
 	"github.com/iamgp/tideline/internal/settings"
 	"github.com/iamgp/tideline/internal/store"
+	"github.com/iamgp/tideline/internal/webpush"
 )
 
 // Options configures a Server.
@@ -26,6 +27,14 @@ type Options struct {
 	Log       *slog.Logger
 	Static    fs.FS // web UI assets; nil disables the UI
 	Sender    alerts.Sender
+
+	// Push enables Web Push device registration; nil disables it.
+	Push *webpush.Client
+	// PushHostAllowed overrides which push service hosts devices may
+	// register (default: the major browser push services).
+	PushHostAllowed func(host string) bool
+	// PushAllowHTTP permits non-HTTPS push endpoints (tests only).
+	PushAllowHTTP bool
 }
 
 // Server is the Tideline HTTP server.
@@ -53,6 +62,7 @@ func New(st *store.Store, a *auth.Authenticator, sm *settings.Manager, opts Opti
 	s.alerts = alerts.New(st, sm.Get, func(list []alerts.Alert) {
 		s.hub.Publish(Event{"alerts", list})
 	}, opts.Sender, opts.Log)
+	s.alerts.SetExtraNotifiers(s.pushNotifiers)
 
 	st.OnChange(func(coll string, docs []store.Doc) {
 		s.hub.Publish(Event{coll, docs})
@@ -77,6 +87,7 @@ func (s *Server) Handler() http.Handler {
 	// Nightscout API v1 compatibility.
 	s.routesNightscout(mux)
 	s.routesV3(mux)
+	s.routesPush(mux)
 
 	// Native API.
 	mux.HandleFunc("GET /api/tl/v1/me", s.read(s.handleMe))
