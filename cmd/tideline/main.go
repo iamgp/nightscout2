@@ -23,6 +23,7 @@ import (
 	"github.com/iamgp/tideline/internal/server"
 	"github.com/iamgp/tideline/internal/settings"
 	"github.com/iamgp/tideline/internal/store"
+	"github.com/iamgp/tideline/internal/webpush"
 	"github.com/iamgp/tideline/web"
 )
 
@@ -135,11 +136,26 @@ func serve() error {
 	authn := auth.New(secret, st, publicRead)
 	publicURL := strings.TrimRight(env("TIDELINE_PUBLIC_URL"), "/")
 
+	push, err := loadPush(ctx, st, publicURL)
+	if err != nil {
+		return fmt.Errorf("web push keys: %w", err)
+	}
 	sender := &alerts.HTTPSender{
 		Client:   &http.Client{Timeout: 15 * time.Second},
 		Units:    func() string { return sm.Get().Units },
 		SiteName: func() string { return sm.Get().Name },
 		BaseURL:  publicURL,
+		Push:     push,
+		OnPushResult: func(endpoint string, err error) {
+			bg := context.Background()
+			switch {
+			case errors.Is(err, webpush.ErrGone):
+				log.Info("removing expired push subscription")
+				_ = st.DeletePushEndpoint(bg, endpoint)
+			default:
+				_ = st.RecordPushResult(bg, endpoint, err == nil)
+			}
+		},
 	}
 	srv := server.New(st, authn, sm, server.Options{
 		Version:   version,
@@ -147,6 +163,7 @@ func serve() error {
 		Log:       log,
 		Static:    web.Static(),
 		Sender:    sender,
+		Push:      push,
 	})
 	go srv.Alerts().Run(ctx, 30*time.Second)
 
@@ -187,6 +204,38 @@ func serve() error {
 	sctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 	return hs.Shutdown(sctx)
+}
+
+// loadPush loads this server's VAPID keys, creating them on first run. They
+// must stay the same for the life of the database, or every registered
+// device would have to subscribe again.
+func loadPush(ctx context.Context, st *store.Store, publicURL string) (*webpush.Client, error) {
+	var keys *webpush.Keys
+	raw, ok, err := st.GetSetting(ctx, "vapid")
+	if err != nil {
+		return nil, err
+	}
+	if ok {
+		if keys, err = webpush.ParseKeys(string(raw)); err != nil {
+			return nil, err
+		}
+	} else {
+		if keys, err = webpush.GenerateKeys(); err != nil {
+			return nil, err
+		}
+		if err := st.PutSetting(ctx, "vapid", []byte(keys.Marshal())); err != nil {
+			return nil, err
+		}
+	}
+	// Push services want a way to contact the sender: an https URL or mailto.
+	subject := env("TIDELINE_VAPID_SUBJECT")
+	if subject == "" && strings.HasPrefix(publicURL, "https://") {
+		subject = publicURL
+	}
+	if subject == "" {
+		subject = "https://github.com/iamgp/tideline"
+	}
+	return &webpush.Client{Keys: keys, Subject: subject, HTTP: &http.Client{Timeout: 15 * time.Second}}, nil
 }
 
 func firstNonEmpty(vs ...string) string {
