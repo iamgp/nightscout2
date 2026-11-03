@@ -12,6 +12,9 @@ services:
       DEXCOM_USERNAME: ${DEXCOM_USERNAME:-}
       DEXCOM_PASSWORD: ${DEXCOM_PASSWORD:-}
       DEXCOM_REGION: ${DEXCOM_REGION:-us}
+      LIBRE_EMAIL: ${LIBRE_EMAIL:-}
+      LIBRE_PASSWORD: ${LIBRE_PASSWORD:-}
+      LIBRE_REGION: ${LIBRE_REGION:-}
     volumes:
       - tideline-data:/data
 

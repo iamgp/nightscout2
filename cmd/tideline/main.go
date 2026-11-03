@@ -20,6 +20,7 @@ import (
 	"github.com/iamgp/tideline/internal/auth"
 	"github.com/iamgp/tideline/internal/dexcom"
 	"github.com/iamgp/tideline/internal/importer"
+	"github.com/iamgp/tideline/internal/libre"
 	"github.com/iamgp/tideline/internal/server"
 	"github.com/iamgp/tideline/internal/settings"
 	"github.com/iamgp/tideline/internal/store"
@@ -47,6 +48,8 @@ Configuration (environment):
   TIDELINE_LOG_LEVEL    debug, info, warn or error (default info)
   DEXCOM_USERNAME, DEXCOM_PASSWORD, DEXCOM_REGION (us, ous, jp)
                         pull readings from Dexcom Share
+  LIBRE_EMAIL, LIBRE_PASSWORD, LIBRE_REGION (optional), LIBRE_PATIENT_ID (optional)
+                        pull readings from LibreLinkUp
 `
 
 func main() {
@@ -178,6 +181,22 @@ func serve() error {
 			return err
 		}, log)
 		log.Info("dexcom share bridge enabled", "region", firstNonEmpty(env("DEXCOM_REGION"), "us"))
+	}
+
+	if email := env("LIBRE_EMAIL"); email != "" {
+		host, err := libre.RegionHost(env("LIBRE_REGION"))
+		if err != nil {
+			return err
+		}
+		c := &libre.Client{
+			Host: host, Email: email, Password: env("LIBRE_PASSWORD"),
+			PatientID: env("LIBRE_PATIENT_ID"), Version: firstNonEmpty(env("LIBRE_VERSION"), libre.DefaultVersion),
+		}
+		go libre.Poll(ctx, c, 2*time.Minute, func(ctx context.Context, docs []store.Doc) error {
+			_, err := st.InsertEntries(ctx, docs)
+			return err
+		}, log)
+		log.Info("librelinkup bridge enabled", "host", host)
 	}
 
 	addr := env("TIDELINE_ADDR")
