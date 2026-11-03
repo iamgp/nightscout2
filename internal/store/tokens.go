@@ -126,6 +126,15 @@ func (s *Store) LookupToken(ctx context.Context, plain string) (Token, bool, err
 	return t, err == nil, err
 }
 
+// LookupTokenByID finds a token by its ID.
+func (s *Store) LookupTokenByID(ctx context.Context, id string) (Token, bool, error) {
+	t, err := scanToken(s.db.QueryRowContext(ctx, `SELECT `+tokenCols+` FROM tokens WHERE id = ?`, id))
+	if errors.Is(err, sql.ErrNoRows) {
+		return t, false, nil
+	}
+	return t, err == nil, err
+}
+
 // LookupTokenSHA1 finds a token by the hex SHA-1 of its plaintext.
 func (s *Store) LookupTokenSHA1(ctx context.Context, sha1hex string) (Token, bool, error) {
 	t, err := scanToken(s.db.QueryRowContext(ctx, `SELECT `+tokenCols+` FROM tokens WHERE sha1 = ?`, strings.ToLower(sha1hex)))

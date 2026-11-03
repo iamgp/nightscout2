@@ -1,9 +1,15 @@
 // Package store persists Tideline data in SQLite.
 //
-// Documents (entries, treatments, device status, profiles) are stored as the
-// JSON the uploader sent, alongside a few indexed columns used for querying.
-// Keeping the original document means Nightscout clients get back exactly the
-// fields they wrote, including ones Tideline doesn't know about.
+// Documents (entries, treatments, device status, profiles, food and client
+// settings) are stored as the JSON the uploader sent, alongside a few indexed
+// columns used for querying. Keeping the original document means Nightscout
+// clients get back exactly the fields they wrote, including ones Tideline
+// doesn't know about.
+//
+// Every document also carries server-managed metadata used by Nightscout API
+// v3 sync: srv_created, srv_modified (strictly increasing across the whole
+// store) and is_valid (deletions are soft, so syncing clients learn about them
+// through the history endpoint).
 package store
 
 import (
@@ -16,7 +22,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -28,15 +33,8 @@ import (
 // Doc is a JSON document as exchanged with Nightscout clients.
 type Doc = map[string]any
 
-// Collection names.
-const (
-	Entries      = "entries"
-	Treatments   = "treatments"
-	DeviceStatus = "devicestatus"
-	Profiles     = "profile"
-)
-
 // ChangeFunc is called after documents are written to a collection.
+// Deleted documents are reported as {"_id": id, "identifier": id, "_deleted": true}.
 type ChangeFunc func(collection string, docs []Doc)
 
 // Store is a SQLite-backed document store.
@@ -45,9 +43,14 @@ type Store struct {
 
 	mu        sync.RWMutex
 	listeners []ChangeFunc
+
+	modMu   sync.Mutex
+	lastMod int64
 }
 
-const schema = `
+// baseSchema is the v1.0 schema. Later changes are applied as migrations so
+// existing databases upgrade in place.
+const baseSchema = `
 CREATE TABLE IF NOT EXISTS entries (
 	id         TEXT PRIMARY KEY,
 	type       TEXT NOT NULL,
@@ -117,13 +120,54 @@ CREATE TABLE IF NOT EXISTS audit (
 CREATE INDEX IF NOT EXISTS audit_at ON audit(at);
 `
 
+// migrations[i] upgrades a database from user_version i to i+1.
+var migrations = []string{
+	// 1: API v3 sync metadata, soft deletes, food and client settings collections.
+	`
+	ALTER TABLE entries      ADD COLUMN srv_modified INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE entries      ADD COLUMN is_valid     INTEGER NOT NULL DEFAULT 1;
+	ALTER TABLE treatments   ADD COLUMN srv_modified INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE treatments   ADD COLUMN is_valid     INTEGER NOT NULL DEFAULT 1;
+	ALTER TABLE devicestatus ADD COLUMN srv_modified INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE devicestatus ADD COLUMN is_valid     INTEGER NOT NULL DEFAULT 1;
+	ALTER TABLE profile      ADD COLUMN srv_modified INTEGER NOT NULL DEFAULT 0;
+	ALTER TABLE profile      ADD COLUMN is_valid     INTEGER NOT NULL DEFAULT 1;
+	UPDATE entries      SET srv_modified = srv_created;
+	UPDATE treatments   SET srv_modified = srv_created;
+	UPDATE devicestatus SET srv_modified = srv_created;
+	UPDATE profile      SET srv_modified = srv_created;
+	CREATE INDEX entries_modified      ON entries(srv_modified);
+	CREATE INDEX treatments_modified   ON treatments(srv_modified);
+	CREATE INDEX devicestatus_modified ON devicestatus(srv_modified);
+	CREATE INDEX profile_modified      ON profile(srv_modified);
+
+	CREATE TABLE food (
+		id           TEXT PRIMARY KEY,
+		created_at   INTEGER NOT NULL,
+		doc          TEXT NOT NULL,
+		srv_created  INTEGER NOT NULL,
+		srv_modified INTEGER NOT NULL,
+		is_valid     INTEGER NOT NULL DEFAULT 1
+	);
+	CREATE INDEX food_modified ON food(srv_modified);
+
+	CREATE TABLE ns_settings (
+		id           TEXT PRIMARY KEY,
+		created_at   INTEGER NOT NULL,
+		doc          TEXT NOT NULL,
+		srv_created  INTEGER NOT NULL,
+		srv_modified INTEGER NOT NULL,
+		is_valid     INTEGER NOT NULL DEFAULT 1
+	);
+	CREATE INDEX ns_settings_modified ON ns_settings(srv_modified);
+	`,
+}
+
 // Open opens (creating if needed) the database at path. Use ":memory:" for tests.
 func Open(path string) (*Store, error) {
-	dsn := path
+	dsn := "file:" + path
 	if path == ":memory:" {
 		dsn = "file::memory:"
-	} else {
-		dsn = "file:" + path
 	}
 	dsn += "?_pragma=journal_mode(WAL)&_pragma=busy_timeout(5000)&_pragma=synchronous(NORMAL)&_pragma=foreign_keys(1)"
 	db, err := sql.Open("sqlite", dsn)
@@ -133,11 +177,66 @@ func Open(path string) (*Store, error) {
 	// A single connection serialises writes and keeps in-memory DBs coherent.
 	// Tideline serves one person's data, so this is plenty.
 	db.SetMaxOpenConns(1)
-	if _, err := db.Exec(schema); err != nil {
+	s := &Store{db: db}
+	if err := s.migrate(); err != nil {
 		db.Close()
-		return nil, fmt.Errorf("apply schema: %w", err)
+		return nil, err
 	}
-	return &Store{db: db}, nil
+	if err := s.initLastMod(); err != nil {
+		db.Close()
+		return nil, err
+	}
+	return s, nil
+}
+
+func (s *Store) migrate() error {
+	if _, err := s.db.Exec(baseSchema); err != nil {
+		return fmt.Errorf("apply schema: %w", err)
+	}
+	var version int
+	if err := s.db.QueryRow(`PRAGMA user_version`).Scan(&version); err != nil {
+		return err
+	}
+	for i := version; i < len(migrations); i++ {
+		tx, err := s.db.Begin()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(migrations[i]); err != nil {
+			tx.Rollback()
+			return fmt.Errorf("migration %d: %w", i+1, err)
+		}
+		if _, err := tx.Exec(fmt.Sprintf(`PRAGMA user_version = %d`, i+1)); err != nil {
+			tx.Rollback()
+			return err
+		}
+		if err := tx.Commit(); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (s *Store) initLastMod() error {
+	var parts []string
+	for _, c := range collections {
+		parts = append(parts, `SELECT COALESCE(MAX(srv_modified), 0) AS m FROM `+c.table)
+	}
+	return s.db.QueryRow(`SELECT MAX(m) FROM (` + strings.Join(parts, " UNION ALL ") + `)`).Scan(&s.lastMod)
+}
+
+// nextModified returns a strictly increasing millisecond timestamp, so
+// clients paging through history with "modified after X" never miss a
+// document that shares a millisecond with another.
+func (s *Store) nextModified() int64 {
+	s.modMu.Lock()
+	defer s.modMu.Unlock()
+	now := time.Now().UnixMilli()
+	if now <= s.lastMod {
+		now = s.lastMod + 1
+	}
+	s.lastMod = now
+	return now
 }
 
 // Close closes the database.
@@ -165,8 +264,6 @@ func (s *Store) emit(coll string, docs []Doc) {
 // ---------------------------------------------------------------------------
 // IDs and value helpers
 
-var objectIDRe = regexp.MustCompile(`^[0-9a-fA-F]{24}$`)
-
 // NewID returns a 24-hex-character ID shaped like a MongoDB ObjectId, which
 // some Nightscout clients expect.
 func NewID() string {
@@ -176,15 +273,6 @@ func NewID() string {
 		panic(err)
 	}
 	return hex.EncodeToString(b[:])
-}
-
-func takeID(d Doc) string {
-	id, _ := d["_id"].(string)
-	delete(d, "_id")
-	if id != "" && len(id) <= 64 {
-		return id
-	}
-	return NewID()
 }
 
 // toFloat converts a JSON value (number, json.Number, numeric string) to float64.
@@ -275,295 +363,10 @@ func DecodeDocs(raw []byte) ([]Doc, error) {
 	if err := dec.Decode(&d); err != nil {
 		return nil, err
 	}
+	if d == nil {
+		return nil, errors.New("expected a JSON object")
+	}
 	return []Doc{d}, nil
-}
-
-func decodeDoc(id, raw string) (Doc, error) {
-	dec := json.NewDecoder(strings.NewReader(raw))
-	dec.UseNumber()
-	var d Doc
-	if err := dec.Decode(&d); err != nil {
-		return nil, err
-	}
-	d["_id"] = id
-	return d, nil
-}
-
-// ---------------------------------------------------------------------------
-// Writes
-
-// InsertEntries upserts CGM/meter entries. An entry with the same type and
-// timestamp as an existing one replaces it (uploaders frequently resend).
-func (s *Store) InsertEntries(ctx context.Context, docs []Doc) ([]Doc, error) {
-	now := time.Now()
-	out := make([]Doc, 0, len(docs))
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO entries (id, type, date, sgv, direction, device, doc, srv_created)
-		VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-		ON CONFLICT(type, date) DO UPDATE SET
-			sgv = excluded.sgv, direction = excluded.direction,
-			device = excluded.device, doc = excluded.doc
-		RETURNING id`)
-	if err != nil {
-		return nil, err
-	}
-	defer stmt.Close()
-	for _, in := range docs {
-		d := cloneDoc(in)
-		id := takeID(d)
-		typ, _ := d["type"].(string)
-		if typ == "" {
-			typ = "sgv"
-			d["type"] = typ
-		}
-		t, ok := ParseTime(d["date"])
-		if !ok {
-			if t, ok = ParseTime(d["dateString"]); !ok {
-				if t, ok = ParseTime(d["sysTime"]); !ok {
-					t = now
-				}
-			}
-		}
-		ms := t.UnixMilli()
-		d["date"] = ms
-		if _, ok := d["dateString"].(string); !ok {
-			d["dateString"] = isoMillis(t)
-		}
-		if _, ok := d["sysTime"].(string); !ok {
-			d["sysTime"] = d["dateString"]
-		}
-		var sgv any
-		if f, ok := toFloat(d["sgv"]); ok {
-			sgv = f
-		} else if typ == "mbg" {
-			if f, ok := toFloat(d["mbg"]); ok {
-				sgv = f
-			}
-		}
-		dir, _ := d["direction"].(string)
-		dev, _ := d["device"].(string)
-		raw, err := json.Marshal(d)
-		if err != nil {
-			return nil, err
-		}
-		var gotID string
-		if err := stmt.QueryRowContext(ctx, id, typ, ms, sgv, dir, dev, string(raw), now.UnixMilli()).Scan(&gotID); err != nil {
-			return nil, err
-		}
-		d["_id"] = gotID
-		out = append(out, d)
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	s.emit(Entries, out)
-	return out, nil
-}
-
-// InsertTreatments upserts treatments (boluses, carbs, temp basals, notes…).
-// Treatments are de-duplicated on eventType + created_at, as in Nightscout.
-func (s *Store) InsertTreatments(ctx context.Context, docs []Doc) ([]Doc, error) {
-	now := time.Now()
-	out := make([]Doc, 0, len(docs))
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO treatments (id, event_type, created_at, doc, srv_created)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(event_type, created_at) DO UPDATE SET doc = excluded.doc
-		RETURNING id`)
-	if err != nil {
-		return nil, err
-	}
-	defer stmt.Close()
-	for _, in := range docs {
-		d := cloneDoc(in)
-		id := takeID(d)
-		et, _ := d["eventType"].(string)
-		if et == "" {
-			et = "<none>"
-			d["eventType"] = et
-		}
-		t, ok := ParseTime(d["created_at"])
-		if !ok {
-			if t, ok = ParseTime(d["timestamp"]); !ok {
-				if t, ok = ParseTime(d["date"]); !ok {
-					t = now
-				}
-			}
-		}
-		d["created_at"] = isoMillis(t)
-		raw, err := json.Marshal(d)
-		if err != nil {
-			return nil, err
-		}
-		var gotID string
-		if err := stmt.QueryRowContext(ctx, id, et, t.UnixMilli(), string(raw), now.UnixMilli()).Scan(&gotID); err != nil {
-			return nil, err
-		}
-		d["_id"] = gotID
-		out = append(out, d)
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	s.emit(Treatments, out)
-	return out, nil
-}
-
-// UpdateTreatment replaces a treatment by ID. Returns false if it doesn't exist.
-func (s *Store) UpdateTreatment(ctx context.Context, d Doc) (Doc, bool, error) {
-	d = cloneDoc(d)
-	id, _ := d["_id"].(string)
-	if id == "" {
-		return nil, false, errors.New("_id is required")
-	}
-	delete(d, "_id")
-	et, _ := d["eventType"].(string)
-	if et == "" {
-		et = "<none>"
-		d["eventType"] = et
-	}
-	t, ok := ParseTime(d["created_at"])
-	if !ok {
-		return nil, false, errors.New("created_at is required")
-	}
-	d["created_at"] = isoMillis(t)
-	raw, err := json.Marshal(d)
-	if err != nil {
-		return nil, false, err
-	}
-	res, err := s.db.ExecContext(ctx, `UPDATE treatments SET event_type = ?, created_at = ?, doc = ? WHERE id = ?`,
-		et, t.UnixMilli(), string(raw), id)
-	if err != nil {
-		return nil, false, err
-	}
-	n, _ := res.RowsAffected()
-	if n == 0 {
-		return nil, false, nil
-	}
-	d["_id"] = id
-	s.emit(Treatments, []Doc{d})
-	return d, true, nil
-}
-
-// InsertDeviceStatus upserts device status records (pump, loop, uploader battery…).
-func (s *Store) InsertDeviceStatus(ctx context.Context, docs []Doc) ([]Doc, error) {
-	now := time.Now()
-	out := make([]Doc, 0, len(docs))
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	stmt, err := tx.PrepareContext(ctx, `
-		INSERT INTO devicestatus (id, created_at, device, doc, srv_created)
-		VALUES (?, ?, ?, ?, ?)
-		ON CONFLICT(device, created_at) DO UPDATE SET doc = excluded.doc
-		RETURNING id`)
-	if err != nil {
-		return nil, err
-	}
-	defer stmt.Close()
-	for _, in := range docs {
-		d := cloneDoc(in)
-		id := takeID(d)
-		t, ok := ParseTime(d["created_at"])
-		if !ok {
-			t = now
-		}
-		d["created_at"] = isoMillis(t)
-		dev, _ := d["device"].(string)
-		raw, err := json.Marshal(d)
-		if err != nil {
-			return nil, err
-		}
-		var gotID string
-		if err := stmt.QueryRowContext(ctx, id, t.UnixMilli(), dev, string(raw), now.UnixMilli()).Scan(&gotID); err != nil {
-			return nil, err
-		}
-		d["_id"] = gotID
-		out = append(out, d)
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	s.emit(DeviceStatus, out)
-	return out, nil
-}
-
-// InsertProfiles stores therapy profiles. Profiles with an existing _id are replaced.
-func (s *Store) InsertProfiles(ctx context.Context, docs []Doc) ([]Doc, error) {
-	now := time.Now()
-	out := make([]Doc, 0, len(docs))
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return nil, err
-	}
-	defer tx.Rollback()
-	for _, in := range docs {
-		d := cloneDoc(in)
-		id := takeID(d)
-		t, ok := ParseTime(d["created_at"])
-		if !ok {
-			if t, ok = ParseTime(d["startDate"]); !ok {
-				t = now
-			}
-		}
-		if _, ok := d["created_at"].(string); !ok {
-			d["created_at"] = isoMillis(t)
-		}
-		raw, err := json.Marshal(d)
-		if err != nil {
-			return nil, err
-		}
-		if _, err := tx.ExecContext(ctx, `
-			INSERT INTO profile (id, created_at, doc, srv_created) VALUES (?, ?, ?, ?)
-			ON CONFLICT(id) DO UPDATE SET created_at = excluded.created_at, doc = excluded.doc`,
-			id, t.UnixMilli(), string(raw), now.UnixMilli()); err != nil {
-			return nil, err
-		}
-		d["_id"] = id
-		out = append(out, d)
-	}
-	if err := tx.Commit(); err != nil {
-		return nil, err
-	}
-	s.emit(Profiles, out)
-	return out, nil
-}
-
-// Delete removes a document by ID from a collection. Returns whether it existed.
-func (s *Store) Delete(ctx context.Context, coll, id string) (bool, error) {
-	c, ok := collections[coll]
-	if !ok {
-		return false, fmt.Errorf("unknown collection %q", coll)
-	}
-	res, err := s.db.ExecContext(ctx, `DELETE FROM `+c.table+` WHERE id = ?`, id)
-	if err != nil {
-		return false, err
-	}
-	n, _ := res.RowsAffected()
-	if n > 0 {
-		s.emit(coll, []Doc{{"_id": id, "_deleted": true}})
-	}
-	return n > 0, nil
-}
-
-func cloneDoc(d Doc) Doc {
-	c := make(Doc, len(d)+3)
-	for k, v := range d {
-		c[k] = v
-	}
-	return c
 }
 
 // ---------------------------------------------------------------------------
@@ -580,7 +383,7 @@ type Reading struct {
 func (s *Store) SGVs(ctx context.Context, from, to time.Time) ([]Reading, error) {
 	rows, err := s.db.QueryContext(ctx, `
 		SELECT date, sgv, COALESCE(direction, '') FROM entries
-		WHERE type = 'sgv' AND sgv IS NOT NULL AND sgv > 0 AND date >= ? AND date < ?
+		WHERE type = 'sgv' AND is_valid = 1 AND sgv IS NOT NULL AND sgv > 0 AND date >= ? AND date < ?
 		ORDER BY date ASC`, from.UnixMilli(), to.UnixMilli())
 	if err != nil {
 		return nil, err
@@ -602,7 +405,7 @@ func (s *Store) LatestSGV(ctx context.Context) (Reading, bool, error) {
 	var r Reading
 	err := s.db.QueryRowContext(ctx, `
 		SELECT date, sgv, COALESCE(direction, '') FROM entries
-		WHERE type = 'sgv' AND sgv IS NOT NULL AND sgv > 0
+		WHERE type = 'sgv' AND is_valid = 1 AND sgv IS NOT NULL AND sgv > 0
 		ORDER BY date DESC LIMIT 1`).Scan(&r.Time, &r.Value, &r.Direction)
 	if errors.Is(err, sql.ErrNoRows) {
 		return r, false, nil

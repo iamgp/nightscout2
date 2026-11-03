@@ -470,3 +470,13 @@ func TestTokenInUploaderSecretField(t *testing.T) {
 		t.Fatalf("unknown sha1: %d", code)
 	}
 }
+
+func mustJSON(v any) string {
+	b, err := json.Marshal(v)
+	if err != nil {
+		panic(err)
+	}
+	return string(b)
+}
+
+func jsonDecode(r io.Reader, v any) error { return json.NewDecoder(r).Decode(v) }

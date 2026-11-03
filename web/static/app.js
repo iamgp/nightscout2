@@ -907,7 +907,8 @@
     } else if (role === 'uploader') {
       const xdrip = `${location.protocol}//${token}@${location.host}/api/v1/`;
       html += `<p>xDrip+ base URL:</p><p><code>${esc(xdrip)}</code> <button type="button" class="small" data-copy="${esc(xdrip)}">Copy</button></p>
-        <p class="muted small">Loop, Trio and other Nightscout uploaders: use <code>${esc(origin)}</code> as the site URL and paste this token into the API secret field.</p>`;
+        <p class="muted small">Loop, Trio and other Nightscout uploaders: use <code>${esc(origin)}</code> as the site URL and paste this token into the API secret field.</p>
+        <p class="muted small">AndroidAPS: use the NSClient v3 plugin with <code>${esc(origin)}</code> as the URL and this token as the access token.</p>`;
     }
     el.innerHTML = html;
     el.hidden = false;
