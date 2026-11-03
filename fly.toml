@@ -1,0 +1,37 @@
+# Fly.io configuration. Deploy with `mise run deploy:fly` or see the README.
+app = "tideline"
+primary_region = "lhr"
+
+[build]
+  dockerfile = "Dockerfile"
+
+[env]
+  TIDELINE_DB = "/data/tideline.db"
+  PORT = "8080"
+
+# The database lives on a volume, so there must be exactly one machine:
+# deploy with --ha=false. Fly creates the volume on first deploy.
+[[mounts]]
+  source = "tideline_data"
+  destination = "/data"
+  initial_size = "1gb"
+
+[http_service]
+  internal_port = 8080
+  force_https = true
+  # Never stop the machine when idle: alerts and CGM bridges run in the
+  # background, and a stopped machine sends no alerts.
+  auto_stop_machines = "off"
+  auto_start_machines = true
+  min_machines_running = 1
+
+  [[http_service.checks]]
+    grace_period = "15s"
+    interval = "30s"
+    method = "GET"
+    path = "/healthz"
+    timeout = "5s"
+
+[[vm]]
+  size = "shared-cpu-1x"
+  memory = "256mb"

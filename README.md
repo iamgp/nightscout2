@@ -50,12 +50,39 @@ TIDELINE_API_SECRET='a-long-random-secret' docker compose up -d
 
 Data lives in the `tideline-data` volume (`/data/tideline.db`).
 
-### Railway, Fly.io, Render and other hosts
+### Fly.io
 
-Deploy the `Dockerfile` and attach a persistent volume at `/data`. The image
-runs as a non-root user, so on hosts that mount volumes as root (Railway, for
-example), set `RAILWAY_RUN_UID=0` or the equivalent. Set
-`TIDELINE_PUBLIC_URL` so notifications can link back to your site.
+With [flyctl](https://fly.io/docs/flyctl/install/) installed and logged in:
+
+```sh
+mise run deploy:fly          # or: scripts/deploy-fly.sh [app-name] [region]
+```
+
+This creates the app, a 1 GB volume and an API secret, deploys a single
+machine and prints your site's URL and secret. It costs about $2–3 a month.
+`fly.toml` keeps the machine running when idle (auto-stop would silence
+alerts) and checks `/healthz`.
+
+Run exactly one machine: the database is on that machine's volume. If you
+deploy by hand, use `fly deploy --ha=false`. Fly snapshots volumes daily and
+keeps them for 5 days.
+
+### Railway
+
+1. New project → **Deploy from GitHub repo** → choose this repository.
+   `railway.json` sets the Dockerfile build, health check and restart policy.
+2. On the service, add a **volume** mounted at `/data`.
+3. Add a variable `TIDELINE_API_SECRET` (12+ random characters).
+4. Under **Settings → Networking**, generate a domain.
+
+### Other hosts
+
+Deploy the `Dockerfile` with a persistent volume at `/data` and set
+`TIDELINE_API_SECRET`. The container starts as root only to take ownership
+of the volume (many hosts mount volumes as root), then drops to an
+unprivileged user before opening the database or the network. On Railway and
+Fly.io the public URL is detected automatically; elsewhere set
+`TIDELINE_PUBLIC_URL` so notifications link back to your site.
 
 ## Configuration
 
@@ -64,7 +91,8 @@ example), set `RAILWAY_RUN_UID=0` or the equivalent. Set
 | `TIDELINE_API_SECRET` | required | Admin secret, 12+ characters. `API_SECRET` is also accepted |
 | `TIDELINE_DB` | `tideline.db` | SQLite path |
 | `PORT` | `8080` | |
-| `TIDELINE_PUBLIC_URL` | | Linked from notifications |
+| `TIDELINE_PUBLIC_URL` | detected on Railway and Fly.io | Linked from notifications |
+| `TIDELINE_RUN_AS` | `65532:65532` in the image | When started as root, take ownership of the data directory and run as this user |
 | `TIDELINE_PUBLIC_READ` | `false` | Let anyone with the URL view data (Nightscout's default) |
 | `TIDELINE_UNITS` | `mg/dl` | Initial units (`mg/dl` or `mmol`), changeable in Settings |
 | `TIDELINE_NAME` | `Tideline` | Initial site name |
@@ -163,6 +191,7 @@ Tasks are defined in `mise.toml` (run `mise tasks` to list them):
 | `mise run fmt` | Format Go code |
 | `mise run build` | Build a static binary into `bin/` |
 | `mise run docker` | Build the Docker image |
+| `mise run deploy:fly` | Deploy to Fly.io |
 | `mise run reset-dev-db` | Delete the dev database |
 
 The dev API secret in `mise.toml` is for local use only.
