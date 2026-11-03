@@ -1,0 +1,19 @@
+services:
+  tideline:
+    build: .
+    image: tideline
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      TIDELINE_API_SECRET: ${TIDELINE_API_SECRET:?set TIDELINE_API_SECRET (12+ characters)}
+      TIDELINE_PUBLIC_URL: ${TIDELINE_PUBLIC_URL:-}
+      TIDELINE_UNITS: ${TIDELINE_UNITS:-mg/dl}
+      DEXCOM_USERNAME: ${DEXCOM_USERNAME:-}
+      DEXCOM_PASSWORD: ${DEXCOM_PASSWORD:-}
+      DEXCOM_REGION: ${DEXCOM_REGION:-us}
+    volumes:
+      - tideline-data:/data
+
+volumes:
+  tideline-data:
