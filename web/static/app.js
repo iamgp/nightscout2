@@ -206,6 +206,7 @@
     state.readings = tl.readings;
     state.treatments = tl.treatments;
     state.deviceStatus = tl.deviceStatus;
+    state.profile = tl.profile;
     setAlerts(tl.alerts);
     renderNow();
   }
@@ -256,6 +257,11 @@
         if (!state.deviceStatus || Date.parse(d.created_at) >= Date.parse(state.deviceStatus.created_at)) state.deviceStatus = d;
       }
       renderChips();
+      renderGlucoseChart();
+    });
+    es.addEventListener('profile', (e) => {
+      const docs = JSON.parse(e.data).filter((d) => !d._deleted);
+      if (docs.length) { state.profile = docs[docs.length - 1]; renderGlucoseChart(); }
     });
     es.addEventListener('alerts', (e) => setAlerts(JSON.parse(e.data)));
     es.addEventListener('settings', (e) => {
@@ -358,8 +364,12 @@
     const parts = [];
     if (Number(t.insulin) > 0) parts.push(`${Number(t.insulin)} U insulin`);
     if (Number(t.carbs) > 0) parts.push(`${Number(t.carbs)} g carbs`);
-    if (/temp basal/i.test(t.eventType || '') && t.rate !== undefined) {
-      parts.push(`Temp basal ${Number(t.rate ?? t.absolute).toFixed(2)} U/h for ${Math.round(Number(t.duration) || 0)} min`);
+    if (/temp basal/i.test(t.eventType || '')) {
+      const rate = t.absolute ?? t.rate;
+      const pct = t.percent;
+      const mins = Math.round(t.durationInMilliseconds != null ? t.durationInMilliseconds / MIN : Number(t.duration) || 0);
+      if (rate != null) parts.push(`Temp basal ${Number(rate).toFixed(2)} U/h for ${mins} min`);
+      else if (pct != null) parts.push(`Temp basal ${pct >= 0 ? '+' : ''}${pct}% for ${mins} min`);
     }
     const label = parts.length ? parts.join(' · ') : (t.eventType && t.eventType !== '<none>' ? t.eventType : 'Note');
     return t.notes ? `${label} — ${t.notes}` : label;
@@ -367,7 +377,8 @@
 
   function renderTreatments() {
     const list = $('#treatments');
-    const recent = state.treatments.slice(-15).reverse();
+    // Temp basals arrive every few minutes from a loop; they're shown on the basal lane instead.
+    const recent = state.treatments.filter((t) => !/temp basal/i.test(t.eventType || '')).slice(-15).reverse();
     if (!recent.length) {
       list.innerHTML = '<li class="muted">Nothing logged in the last day.</li>';
       return;
@@ -602,21 +613,121 @@
     return steps.find((s) => (plotWidth * s) / span >= 72) || steps[steps.length - 1];
   }
 
+  // Glucose forecasts uploaded by Loop (loop.predicted) or OpenAPS-family
+  // systems: AndroidAPS, Trio, iAPS (openaps.suggested.predBGs). Values are
+  // mg/dL at 5-minute steps. Colour follows the forecast type, never its rank.
+  const FORECASTS = [
+    { key: 'loop', label: 'Loop', color: 'var(--fc-1)' },
+    { key: 'IOB', label: 'IOB', color: 'var(--fc-1)' },
+    { key: 'COB', label: 'COB', color: 'var(--fc-2)' },
+    { key: 'UAM', label: 'UAM', color: 'var(--fc-3)' },
+    { key: 'ZT', label: 'Zero temp', color: 'var(--fc-4)' },
+  ];
+
+  function forecasts(ds) {
+    if (!ds) return [];
+    const created = Date.parse(ds.created_at);
+    if (!created || Date.now() - created > 15 * MIN) return []; // stale forecasts mislead
+    const out = [];
+    const lp = ds.loop && ds.loop.predicted;
+    if (lp && Array.isArray(lp.values) && lp.values.length) {
+      out.push({ ...FORECASTS[0], start: Date.parse(lp.startDate) || created, values: lp.values.map(Number) });
+    }
+    const sug = ds.openaps && (ds.openaps.suggested || ds.openaps.enacted);
+    if (sug && sug.predBGs) {
+      const start = Date.parse(sug.deliverAt || sug.timestamp) || created;
+      for (const f of FORECASTS.slice(1)) {
+        const vals = sug.predBGs[f.key];
+        if (Array.isArray(vals) && vals.length) out.push({ ...f, start, values: vals.map(Number) });
+      }
+    }
+    return out;
+  }
+
+  const forecastAt = (f, t) => {
+    const i = Math.round((t - f.start) / (5 * MIN));
+    return i >= 0 && i < f.values.length ? f.values[i] : null;
+  };
+
+  // Basal: the profile's schedule (in the profile's time zone) overridden by
+  // temp basals, which may be absolute (U/h) or a percentage of schedule.
+  function basalModel(profile, treatments) {
+    let schedule = null;
+    const store = profile && profile.store;
+    const p = store && (store[profile.defaultProfile] || store[Object.keys(store)[0]]);
+    if (p && Array.isArray(p.basal) && p.basal.length) {
+      const toSec = (b) => (b.timeAsSeconds != null ? Number(b.timeAsSeconds)
+        : (([h, m]) => Number(h) * 3600 + Number(m) * 60)(String(b.time || '0:0').split(':')));
+      const entries = p.basal.map((b) => ({ s: toSec(b), v: Number(b.value) }))
+        .filter((e) => Number.isFinite(e.s) && Number.isFinite(e.v)).sort((a, b) => a.s - b.s);
+      let fmt;
+      const opts = { hour: '2-digit', minute: '2-digit', second: '2-digit', hourCycle: 'h23' };
+      try { fmt = new Intl.DateTimeFormat('en-GB', { ...opts, timeZone: p.timezone || undefined }); } catch { fmt = new Intl.DateTimeFormat('en-GB', opts); }
+      if (entries.length) {
+        schedule = (t) => {
+          const parts = Object.fromEntries(fmt.formatToParts(new Date(t)).map((x) => [x.type, x.value]));
+          const sec = Number(parts.hour) * 3600 + Number(parts.minute) * 60 + Number(parts.second);
+          let v = entries[0].v;
+          for (const e of entries) if (e.s <= sec) v = e.v;
+          return v;
+        };
+      }
+    }
+    const temps = treatments.filter((t) => /temp basal/i.test(t.eventType || '')).map((t) => {
+      const start = Date.parse(t.created_at);
+      const mins = t.durationInMilliseconds != null ? Number(t.durationInMilliseconds) / MIN : Number(t.duration) || 0;
+      const abs = t.absolute != null ? Number(t.absolute) : t.rate != null ? Number(t.rate) : null;
+      return { start, end: start + mins * MIN, abs: Number.isFinite(abs) ? abs : null, pct: t.percent != null ? Number(t.percent) : null };
+    }).filter((t) => t.start).sort((a, b) => a.start - b.start);
+    if (!schedule && !temps.length) return null;
+    return (t) => {
+      const sched = schedule ? schedule(t) : null;
+      let temp = null;
+      for (const tb of temps) if (tb.start <= t && t < tb.end) temp = tb;
+      let rate = sched;
+      if (temp && temp.abs != null) rate = temp.abs;
+      else if (temp && temp.pct != null && sched != null) rate = (sched * (100 + temp.pct)) / 100;
+      return { rate, sched, temp: !!temp };
+    };
+  }
+
+  function renderLegend(fcs, hasBasal) {
+    const items = [
+      '<span><i class="sw sw-insulin"></i>Insulin</span>',
+      '<span><i class="sw sw-carbs"></i>Carbs</span>',
+      '<span><i class="sw sw-target"></i>Target range</span>',
+    ];
+    for (const f of fcs) items.push(`<span><i class="sw sw-line" style="background:${f.color}"></i>${esc(f.label)} forecast</span>`);
+    if (hasBasal) items.push('<span><i class="sw sw-basal"></i>Basal</span>');
+    $('#chart-legend').innerHTML = items.join('');
+  }
+
   function renderGlucoseChart() {
     const box = $('#chart');
     const W = box.clientWidth;
     if (!W) return;
-    const H = W < 600 ? 250 : 320;
+    const now = Date.now();
+    const x0 = now - state.hours * 60 * MIN;
+    const tr = state.treatments.filter((t) => Date.parse(t.created_at) >= x0 - 6 * 60 * MIN);
+    const fcs = forecasts(state.deviceStatus);
+    const basal = basalModel(state.profile, tr);
+    renderLegend(fcs, !!basal);
+
+    // Leave room ahead of now for forecasts.
+    // About a fifth of the chart, so forecasts stay readable on a phone.
+    const ahead = fcs.length ? Math.min(180, Math.max(45, state.hours * 15)) * MIN : 5 * MIN;
+    const x1 = now + ahead;
+    const basalH = basal ? 40 : 0;
+    const H = (W < 600 ? 250 : 320) + basalH;
     const m = { l: 6, r: 44, t: 10, b: 24 };
     const lane = 22; // treatment lane under the plot
-    const now = Date.now();
-    const x0 = now - state.hours * 60 * MIN, x1 = now + 5 * MIN;
     const rs = state.readings.filter((r) => r.t >= x0);
-    const tr = state.treatments.filter((t) => Date.parse(t.created_at) >= x0);
+    const trIn = tr.filter((t) => Date.parse(t.created_at) >= x0);
     const th = state.settings.thresholds;
-    const yMax = Math.max(300, ...rs.map((r) => r.v + 20));
+    const fcMax = fcs.flatMap((f) => f.values.filter((v, i) => f.start + i * 5 * MIN <= x1));
+    const yMax = Math.min(400, Math.max(300, ...rs.map((r) => r.v + 20), ...fcMax.map((v) => v + 20)));
     const yMin = 40;
-    const plotB = H - m.b - lane;
+    const plotB = H - m.b - lane - basalH;
     const X = (t) => m.l + ((t - x0) / (x1 - x0)) * (W - m.l - m.r);
     const Y = (v) => m.t + (1 - (Math.min(Math.max(v, yMin), yMax) - yMin) / (yMax - yMin)) * (plotB - m.t);
 
@@ -634,13 +745,41 @@
     // Time grid.
     const grid = svg('g', { class: 'grid' }, root);
     grid.parentNode.insertBefore(grid, root.firstChild);
-    const step = niceTimeStep(state.hours, W - m.l - m.r);
+    const step = niceTimeStep((x1 - x0) / (60 * MIN), W - m.l - m.r);
     const tzOffset = new Date().getTimezoneOffset() * MIN;
     let t = Math.ceil((x0 - tzOffset) / step) * step + tzOffset;
     for (; t <= x1; t += step) {
-      svg('line', { x1: X(t), x2: X(t), y1: m.t, y2: plotB + lane }, grid);
+      svg('line', { x1: X(t), x2: X(t), y1: m.t, y2: H - m.b }, grid);
       const label = svg('text', { x: X(t), y: H - 6, 'text-anchor': 'middle' }, axis);
       label.textContent = fmtTime(t);
+    }
+
+    // The future: shaded, with a "now" line.
+    if (fcs.length) {
+      svg('rect', { x: X(now), y: m.t, width: X(x1) - X(now), height: plotB - m.t, class: 'future' }, root);
+      svg('line', { x1: X(now), x2: X(now), y1: m.t, y2: plotB, class: 'nowline' }, root);
+    }
+
+    // Forecast lines, each labelled at its end so identity never rests on colour alone.
+    const ends = [];
+    for (const f of fcs) {
+      const pts = [];
+      f.values.forEach((v, i) => {
+        const ft = f.start + i * 5 * MIN;
+        if (ft >= now - 5 * MIN && ft <= x1 && Number.isFinite(v)) pts.push([X(ft), Y(v), v]);
+      });
+      if (pts.length < 2) continue;
+      svg('polyline', { points: pts.map((p) => `${p[0]},${p[1]}`).join(' '), class: 'forecast', style: `stroke: ${f.color}` }, root);
+      const last = pts[pts.length - 1];
+      ends.push({ x: last[0], y: last[1], text: `${f.label} ${fmtBG(last[2])}` });
+    }
+    ends.sort((a, b) => a.y - b.y);
+    for (let i = 1; i < ends.length; i++) ends[i].y = Math.max(ends[i].y, ends[i - 1].y + 12);
+    // Direct labels need room; on a narrow chart the legend and tooltip carry identity.
+    const zoneWidth = X(x1) - X(now);
+    for (const e of zoneWidth >= 90 ? ends : []) {
+      const lbl = svg('text', { x: e.x - 4, y: Math.min(plotB - 4, Math.max(m.t + 10, e.y - 5)), 'text-anchor': 'end', class: 'fc-label' }, root);
+      lbl.textContent = e.text;
     }
 
     // Readings.
@@ -650,13 +789,13 @@
       svg('circle', { cx: X(r.t), cy: Y(r.v), r: dotR, style: `fill: ${classify(r.v).color}` }, dots);
     }
     if (!rs.length) {
-      const e = svg('text', { class: 'empty', x: (W - m.r) / 2, y: (plotB) / 2, 'text-anchor': 'middle' }, root);
+      const e = svg('text', { class: 'empty', x: (W - m.r) / 2, y: plotB / 2, 'text-anchor': 'middle' }, root);
       e.textContent = 'No readings in this period';
     }
 
     // Treatments lane: insulin as downward triangles, carbs as circles.
     const laneY = plotB + lane / 2;
-    for (const tt of tr) {
+    for (const tt of trIn) {
       const x = X(Date.parse(tt.created_at));
       if (Number(tt.insulin) > 0) {
         svg('path', { d: `M${x - 5},${laneY - 6} L${x + 5},${laneY - 6} L${x},${laneY + 4} Z`, style: 'fill: var(--insulin); stroke: var(--surface); stroke-width: 2; paint-order: stroke' }, root);
@@ -666,31 +805,75 @@
       }
     }
 
+    // Basal lane: delivered rate as a filled step area, schedule as a dashed line.
+    if (basal) {
+      const top = plotB + lane + 4, bottom = plotB + lane + basalH - 4;
+      const samples = [];
+      for (let bt = x0; bt <= now; bt += 5 * MIN) samples.push({ t: bt, ...basal(bt) });
+      const maxRate = Math.max(0.5, ...samples.map((s) => Math.max(s.rate || 0, s.sched || 0)));
+      const BY = (r) => bottom - (r / maxRate) * (bottom - top);
+      const stepPath = (key) => {
+        let d = '';
+        samples.forEach((s, i) => {
+          const v = s[key];
+          if (v == null) return;
+          const x = X(s.t), y = BY(v);
+          d += d && samples[i - 1] && samples[i - 1][key] != null ? ` H${x} V${y}` : ` M${x},${y}`;
+        });
+        return d.trim();
+      };
+      const delivered = stepPath('rate');
+      if (delivered) {
+        const last = samples[samples.length - 1];
+        svg('path', { d: `${delivered} H${X(last.t + 5 * MIN)} V${bottom} H${X(samples[0].t)} Z`, class: 'basal-fill' }, root);
+        svg('path', { d: `${delivered} H${X(last.t + 5 * MIN)}`, class: 'basal-line' }, root);
+      }
+      const sched = stepPath('sched');
+      if (sched) svg('path', { d: sched, class: 'basal-sched' }, root);
+      const bl = svg('text', { x: W - m.r + 6, y: top + 8 }, axis);
+      bl.textContent = `${+maxRate.toFixed(2)} U/h`;
+      const bn = svg('text', { x: m.l + 2, y: top + 8 }, axis);
+      bn.textContent = 'Basal';
+    }
+
     // Hover layer.
-    const cross = svg('line', { class: 'crosshair', y1: m.t, y2: plotB, visibility: 'hidden' }, root);
+    const cross = svg('line', { class: 'crosshair', y1: m.t, y2: H - m.b, visibility: 'hidden' }, root);
     const focus = svg('circle', { r: dotR + 2.5, visibility: 'hidden', style: 'stroke: var(--surface); stroke-width: 2' }, root);
     const hit = svg('rect', { x: m.l, y: 0, width: W - m.l - m.r, height: H, fill: 'transparent' }, root);
     const onMove = (ev) => {
       const rect = root.getBoundingClientRect();
       const px = ((ev.clientX - rect.left) / rect.width) * W;
       const tAt = x0 + ((px - m.l) / (W - m.l - m.r)) * (x1 - x0);
-      let best = null;
-      for (const r of rs) if (!best || Math.abs(r.t - tAt) < Math.abs(best.t - tAt)) best = r;
-      const nearT = tr.filter((x) => Math.abs(Date.parse(x.created_at) - tAt) <= 10 * MIN * (state.hours / 6));
-      if (!best && !nearT.length) return hideTip();
       let html = '';
-      if (best && Math.abs(best.t - tAt) <= 15 * MIN) {
-        const st = classify(best.v);
-        cross.setAttribute('x1', X(best.t)); cross.setAttribute('x2', X(best.t));
-        cross.setAttribute('visibility', 'visible');
-        focus.setAttribute('cx', X(best.t)); focus.setAttribute('cy', Y(best.v));
-        focus.style.fill = st.color;
-        focus.setAttribute('visibility', 'visible');
-        html += `<div class="t">${esc(fmtTime(best.t))}</div><div class="v">${esc(fmtBG(best.v))} ${esc(unitLabel())} ${ARROWS[best.d] ? ARROWS[best.d][0] : ''}</div><div class="muted small">${esc(st.label)}</div>`;
+      cross.setAttribute('visibility', 'hidden');
+      focus.setAttribute('visibility', 'hidden');
+      if (tAt > now && fcs.length) {
+        // In the future: show each forecast at this time.
+        const rows = fcs.map((f) => [f, forecastAt(f, tAt)]).filter(([, v]) => v != null);
+        if (rows.length) {
+          cross.setAttribute('x1', px); cross.setAttribute('x2', px);
+          cross.setAttribute('visibility', 'visible');
+          html += `<div class="t">${esc(fmtTime(tAt))} · forecast</div>` + rows.map(([f, v]) =>
+            `<div class="line small"><i class="sw sw-line" style="background:${f.color}"></i> ${esc(f.label)} <b>${esc(fmtBG(v))}</b></div>`).join('');
+        }
       } else {
-        cross.setAttribute('visibility', 'hidden');
-        focus.setAttribute('visibility', 'hidden');
+        let best = null;
+        for (const r of rs) if (!best || Math.abs(r.t - tAt) < Math.abs(best.t - tAt)) best = r;
+        if (best && Math.abs(best.t - tAt) <= 15 * MIN) {
+          const st = classify(best.v);
+          cross.setAttribute('x1', X(best.t)); cross.setAttribute('x2', X(best.t));
+          cross.setAttribute('visibility', 'visible');
+          focus.setAttribute('cx', X(best.t)); focus.setAttribute('cy', Y(best.v));
+          focus.style.fill = st.color;
+          focus.setAttribute('visibility', 'visible');
+          html += `<div class="t">${esc(fmtTime(best.t))}</div><div class="v">${esc(fmtBG(best.v))} ${esc(unitLabel())} ${ARROWS[best.d] ? ARROWS[best.d][0] : ''}</div><div class="muted small">${esc(st.label)}</div>`;
+        }
+        if (basal && tAt <= now) {
+          const b = basal(tAt);
+          if (b.rate != null) html += `<div class="line small"><span class="muted">Basal</span> ${esc(b.rate.toFixed(2))} U/h${b.temp ? ' (temp)' : ''}</div>`;
+        }
       }
+      const nearT = trIn.filter((x) => Math.abs(Date.parse(x.created_at) - tAt) <= 10 * MIN * (state.hours / 6));
       for (const x of nearT) {
         html += `<div class="line small"><span class="muted">${esc(fmtTime(Date.parse(x.created_at)))}</span> ${esc(describeTreatment(x))}</div>`;
       }

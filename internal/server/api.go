@@ -68,7 +68,12 @@ func (s *Server) handleTimeline(w http.ResponseWriter, r *http.Request) {
 	if ds, err := s.store.Find(r.Context(), store.DeviceStatus, store.Query{Count: 1}); err == nil && len(ds) > 0 {
 		status = ds[0]
 	}
+	var profile any
+	if ps, err := s.store.Find(r.Context(), store.Profiles, store.Query{Count: 1}); err == nil && len(ps) > 0 {
+		profile = ps[0]
+	}
 	writeJSON(w, http.StatusOK, map[string]any{
+		"profile":      profile,
 		"now":          now.UnixMilli(),
 		"from":         from.UnixMilli(),
 		"readings":     readings,
