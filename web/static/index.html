@@ -1,0 +1,243 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="color-scheme" content="light dark">
+  <meta name="theme-color" content="#0e1a2b" media="(prefers-color-scheme: dark)">
+  <meta name="theme-color" content="#f6f8fb" media="(prefers-color-scheme: light)">
+  <meta name="referrer" content="no-referrer">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Tideline</title>
+  <link rel="manifest" href="manifest.webmanifest">
+  <link rel="icon" href="icon.svg" type="image/svg+xml">
+  <link rel="apple-touch-icon" href="icon-192.png">
+  <link rel="stylesheet" href="style.css">
+  <script src="app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="#now" aria-label="Tideline home">
+      <img src="icon.svg" alt="" width="28" height="28">
+      <span id="site-name">Tideline</span>
+    </a>
+    <nav class="tabs" id="tabs" hidden>
+      <a href="#now" data-view="now">Now</a>
+      <a href="#reports" data-view="reports">Reports</a>
+      <a href="#settings" data-view="settings">Settings</a>
+    </nav>
+    <span class="conn" id="conn" title="Live connection" hidden></span>
+  </header>
+
+  <main id="app">
+    <!-- Sign in -->
+    <section id="view-login" class="view narrow" hidden>
+      <div class="card">
+        <h1>Sign in</h1>
+        <p class="muted">Enter an access token someone shared with you, or your site's API secret.</p>
+        <form id="login-form" autocomplete="off">
+          <label for="login-token">Access token or API secret</label>
+          <input id="login-token" type="password" required autocomplete="current-password" spellcheck="false">
+          <p class="error" id="login-error" role="alert"></p>
+          <button type="submit" class="primary">Sign in</button>
+        </form>
+      </div>
+    </section>
+
+    <!-- Now -->
+    <section id="view-now" class="view" hidden>
+      <div id="alerts" class="alerts" aria-live="assertive"></div>
+
+      <div class="hero card" id="hero">
+        <div class="hero-main">
+          <div class="bg" id="bg-value" aria-live="polite">–</div>
+          <div class="bg-meta">
+            <span class="trend" id="bg-trend" aria-label=""></span>
+            <span class="delta" id="bg-delta"></span>
+            <span class="units" id="bg-units"></span>
+          </div>
+        </div>
+        <div class="hero-side">
+          <span class="pill" id="bg-status"><i></i><b>No data</b></span>
+          <span class="age" id="bg-age"></span>
+        </div>
+      </div>
+
+      <div class="chips" id="chips"></div>
+
+      <div class="card chart-card">
+        <div class="chart-head">
+          <h2>Glucose</h2>
+          <div class="seg" role="group" aria-label="Time range" id="range">
+            <button data-hours="3">3h</button>
+            <button data-hours="6">6h</button>
+            <button data-hours="12">12h</button>
+            <button data-hours="24">24h</button>
+          </div>
+        </div>
+        <div class="legend" id="chart-legend">
+          <span><i class="sw sw-insulin"></i>Insulin</span>
+          <span><i class="sw sw-carbs"></i>Carbs</span>
+          <span><i class="sw sw-target"></i>Target range</span>
+        </div>
+        <div class="chart" id="chart"></div>
+      </div>
+
+      <div class="card" id="entry-card" hidden>
+        <h2>Log a treatment</h2>
+        <form id="entry-form" class="entry-form">
+          <label>Carbs <span class="muted">g</span><input name="carbs" type="number" min="0" max="500" step="1" inputmode="numeric"></label>
+          <label>Insulin <span class="muted">U</span><input name="insulin" type="number" min="0" max="100" step="0.05" inputmode="decimal"></label>
+          <label class="wide">Note<input name="notes" type="text" maxlength="500"></label>
+          <button class="primary" type="submit">Log</button>
+        </form>
+        <p class="muted small">This records what was taken. Tideline never recommends doses.</p>
+        <p class="error" id="entry-error" role="alert"></p>
+      </div>
+
+      <div class="card">
+        <h2>Recent treatments</h2>
+        <ul class="treatments" id="treatments"></ul>
+      </div>
+    </section>
+
+    <!-- Reports -->
+    <section id="view-reports" class="view" hidden>
+      <div class="report-head">
+        <h1>Reports</h1>
+        <div class="seg" role="group" aria-label="Report period" id="report-days">
+          <button data-days="7">7d</button>
+          <button data-days="14">14d</button>
+          <button data-days="30">30d</button>
+          <button data-days="90">90d</button>
+        </div>
+      </div>
+      <p class="muted small" id="report-period"></p>
+      <div class="tiles" id="tiles"></div>
+      <div class="report-grid">
+        <div class="card">
+          <h2>Time in ranges</h2>
+          <div id="tir"></div>
+        </div>
+        <div class="card">
+          <h2>Ambulatory glucose profile</h2>
+          <div class="legend">
+            <span><i class="sw sw-p50"></i>Median</span>
+            <span><i class="sw sw-p25"></i>25–75%</span>
+            <span><i class="sw sw-p5"></i>5–95%</span>
+          </div>
+          <div class="chart" id="agp"></div>
+        </div>
+      </div>
+      <div class="card">
+        <h2>Daily summary</h2>
+        <div class="table-wrap"><table id="daily"></table></div>
+      </div>
+    </section>
+
+    <!-- Settings -->
+    <section id="view-settings" class="view" hidden>
+      <h1>Settings</h1>
+      <p class="muted" id="settings-readonly" hidden>You're signed in as a follower. Ask the site owner to change settings.</p>
+
+      <form id="settings-form" class="settings">
+        <div class="card">
+          <h2>Display</h2>
+          <div class="grid2">
+            <label>Name<input name="name" maxlength="40"></label>
+            <label>Units
+              <select name="units"><option value="mg/dl">mg/dL</option><option value="mmol">mmol/L</option></select>
+            </label>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Glucose thresholds</h2>
+          <p class="muted small">Your target range is low to high. Values are in your display units.</p>
+          <div class="grid4">
+            <label>Urgent low<input name="urgentLow" type="number" step="any" required></label>
+            <label>Low<input name="low" type="number" step="any" required></label>
+            <label>High<input name="high" type="number" step="any" required></label>
+            <label>Urgent high<input name="urgentHigh" type="number" step="any" required></label>
+          </div>
+        </div>
+        <div class="card">
+          <h2>Alerts</h2>
+          <div class="toggles" id="alert-toggles"></div>
+          <div class="grid4">
+            <label>Stale after <span class="muted">min</span><input name="staleMinutes" type="number" min="5" required></label>
+            <label>Urgent stale after <span class="muted">min</span><input name="urgentStaleMinutes" type="number" min="5" required></label>
+            <label>Predict ahead <span class="muted">min</span><input name="predictMinutes" type="number" min="5" max="60" required></label>
+            <label>Repeat warnings <span class="muted">min</span><input name="repeatWarnMinutes" type="number" min="1" required></label>
+            <label>Repeat urgent <span class="muted">min</span><input name="repeatUrgentMinutes" type="number" min="1" required></label>
+          </div>
+        </div>
+        <div class="card" id="notifiers-card">
+          <h2>Notifications</h2>
+          <p class="muted small">Alerts are checked on the server every 30 seconds, so they reach you even when nobody has Tideline open. Use “escalate after” to contact someone else if an alert isn't dealt with.</p>
+          <div id="notifiers"></div>
+          <button type="button" id="add-notifier">Add notification target</button>
+        </div>
+        <div class="save-bar">
+          <p class="error" id="settings-error" role="alert"></p>
+          <p class="ok" id="settings-ok" role="status"></p>
+          <button class="primary" type="submit">Save settings</button>
+        </div>
+      </form>
+
+      <div class="card" id="access-card" hidden>
+        <h2>Access</h2>
+        <p class="muted small">Give each person or device its own token so you can see when it was last used and revoke it on its own.</p>
+        <form id="token-form" class="token-form">
+          <label>Name<input name="name" required maxlength="64" placeholder="e.g. Mum, School nurse, xDrip phone"></label>
+          <label>Access
+            <select name="role">
+              <option value="reader">Follower: view only</option>
+              <option value="uploader">Uploader: send data</option>
+              <option value="admin">Admin: full control</option>
+            </select>
+          </label>
+          <label>Expires
+            <select name="expiresInDays">
+              <option value="0">Never</option>
+              <option value="1">In 1 day</option>
+              <option value="7">In 7 days</option>
+              <option value="30">In 30 days</option>
+              <option value="365">In 1 year</option>
+            </select>
+          </label>
+          <button class="primary" type="submit">Create token</button>
+        </form>
+        <div id="new-token" class="new-token" hidden></div>
+        <div class="table-wrap"><table id="tokens"></table></div>
+      </div>
+
+      <div class="card" id="connect-card">
+        <h2>Connect an uploader</h2>
+        <p class="muted small">Tideline speaks the Nightscout API, so xDrip+, Loop, Trio and Nightscout watch faces work unchanged. Create an <b>uploader</b> token above, then use:</p>
+        <dl class="kv">
+          <dt>Nightscout URL</dt><dd><code id="ns-url"></code></dd>
+          <dt>xDrip+ base URL</dt><dd><code id="xdrip-url"></code></dd>
+        </dl>
+      </div>
+
+      <div class="card" id="audit-card" hidden>
+        <h2>Audit log</h2>
+        <div class="table-wrap"><table id="audit"></table></div>
+      </div>
+
+      <div class="card">
+        <h2>This device</h2>
+        <div class="row">
+          <button type="button" id="sound-toggle">Enable alarm sound</button>
+          <button type="button" id="notify-toggle">Enable browser notifications</button>
+          <button type="button" id="logout">Sign out</button>
+        </div>
+        <p class="muted small" id="version"></p>
+      </div>
+    </section>
+  </main>
+
+  <div class="tooltip" id="tooltip" role="tooltip" hidden></div>
+</body>
+</html>

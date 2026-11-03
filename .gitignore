@@ -1,0 +1,4 @@
+/tideline
+*.db
+*.db-shm
+*.db-wal

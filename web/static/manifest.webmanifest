@@ -1,0 +1,15 @@
+{
+  "name": "Tideline",
+  "short_name": "Tideline",
+  "description": "Live glucose, alerts and reports.",
+  "start_url": "./#now",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0b1522",
+  "theme_color": "#0e1a2b",
+  "icons": [
+    { "src": "icon.svg", "sizes": "any", "type": "image/svg+xml" },
+    { "src": "icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icon-512.png", "sizes": "512x512", "type": "image/png" }
+  ]
+}
