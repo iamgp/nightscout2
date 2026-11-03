@@ -23,7 +23,7 @@ consensus-standard AGP reports.
 | **Escalation** | Each notification target can wait N minutes before it fires, e.g. your phone first, then a partner after 15 minutes |
 | **Access control** | Private by default. Admin, uploader and follower tokens, each with an optional expiry, a last-used time and one-click revoke. Every change is audit-logged |
 | **Reports** | Time in ranges (including tight range), mean, GMI, CV, CGM coverage, low events, an AGP percentile chart and a daily table |
-| **Dexcom Share bridge** | Pulls readings directly from Dexcom, so you don't need an uploader phone |
+| **Dexcom Share and LibreLinkUp bridges** | Pull readings directly from Dexcom or FreeStyle Libre, so you don't need an uploader phone |
 | **Nightscout import** | `tideline import` copies your history from an existing site |
 
 ## Run it
@@ -71,6 +71,10 @@ example), set `RAILWAY_RUN_UID=0` or the equivalent. Set
 | `TIDELINE_LOG_LEVEL` | `info` | |
 | `TIDELINE_VAPID_SUBJECT` | public URL | Contact URL or `mailto:` given to push services |
 | `DEXCOM_USERNAME` / `DEXCOM_PASSWORD` / `DEXCOM_REGION` | | Enables the Share bridge. Region is `us`, `ous` or `jp` |
+| `LIBRE_EMAIL` / `LIBRE_PASSWORD` | | Enables the LibreLinkUp bridge: use a LibreLinkUp *follower* account that the Libre user shares with |
+| `LIBRE_REGION` | auto | Usually detected automatically; set (e.g. `eu`, `us`, `de`) to skip the redirect |
+| `LIBRE_PATIENT_ID` | first connection | Which person to follow if the account follows several |
+| `LIBRE_VERSION` | `4.16.0` | LibreLinkUp app version to present; raise it if Abbott starts rejecting logins |
 
 Thresholds, alerts and notification targets are configured in the web app
 under **Settings**.
@@ -177,7 +181,6 @@ The code layout:
 
 ## Roadmap
 
-- A LibreLinkUp bridge
 - Basal, IOB and COB curves on the chart
 - Clinician PDF export of the AGP report
 - Postgres as an alternative store
