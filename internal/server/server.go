@@ -76,6 +76,7 @@ func (s *Server) Handler() http.Handler {
 
 	// Nightscout API v1 compatibility.
 	s.routesNightscout(mux)
+	s.routesV3(mux)
 
 	// Native API.
 	mux.HandleFunc("GET /api/tl/v1/me", s.read(s.handleMe))

@@ -18,6 +18,7 @@ import (
 	"crypto/sha1"
 	"crypto/subtle"
 	"encoding/hex"
+	"errors"
 	"net/http"
 	"strings"
 	"sync"
@@ -67,6 +68,7 @@ func (p *Principal) IsAdmin() bool { return p != nil && p.Role == RoleAdmin }
 type TokenStore interface {
 	LookupToken(ctx context.Context, plain string) (store.Token, bool, error)
 	LookupTokenSHA1(ctx context.Context, sha1hex string) (store.Token, bool, error)
+	LookupTokenByID(ctx context.Context, id string) (store.Token, bool, error)
 	TouchToken(ctx context.Context, id string, at time.Time) error
 }
 
@@ -157,6 +159,13 @@ func (a *Authenticator) resolveToken(ctx context.Context, tok string) (*Principa
 	// The web UI lets admins sign in with the API secret, sent as a bearer token.
 	if a.isSecret(tok) {
 		return &Principal{Name: "api-secret", Role: RoleAdmin}, nil
+	}
+	if looksLikeJWT(tok) {
+		p, err := a.verifyJWT(ctx, tok)
+		if errors.Is(err, errBadJWT) {
+			return nil, ErrBadCredentials{}
+		}
+		return p, err
 	}
 	t, ok, err := a.tokens.LookupToken(ctx, tok)
 	if err != nil {

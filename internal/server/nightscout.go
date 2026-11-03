@@ -40,6 +40,17 @@ func (s *Server) routesNightscout(mux *http.ServeMux) {
 	both("PUT", "/api/v1/profile", s.write(s.insertHandler(s.store.InsertProfiles)))
 	mux.HandleFunc("GET /api/v1/profile/current", s.read(s.handleCurrentProfile))
 
+	both("GET", "/api/v1/food", s.read(s.findHandler(store.Food, "")))
+	both("POST", "/api/v1/food", s.write(s.insertHandler(func(ctx context.Context, d []store.Doc) ([]store.Doc, error) {
+		rs, err := s.store.Upsert(ctx, store.Food, d)
+		out := make([]store.Doc, len(rs))
+		for i, r := range rs {
+			out[i] = r.Doc
+		}
+		return out, err
+	})))
+	mux.HandleFunc("DELETE /api/v1/food/{id}", s.write(s.deleteHandler(store.Food)))
+
 	mux.HandleFunc("GET /pebble", s.read(s.handlePebble))
 }
 
@@ -181,10 +192,15 @@ func (s *Server) handleUpdateTreatment(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "expected a single treatment object")
 		return
 	}
-	d, ok, err := s.store.UpdateTreatment(r.Context(), docs[0])
-	if err != nil {
-		writeError(w, http.StatusBadRequest, err.Error())
-		return
+	id, _ := docs[0]["_id"].(string)
+	var d store.Doc
+	ok := false
+	if id != "" {
+		d, ok, err = s.store.Replace(r.Context(), store.Treatments, id, docs[0])
+		if err != nil {
+			writeError(w, http.StatusBadRequest, err.Error())
+			return
+		}
 	}
 	if !ok {
 		// Nightscout upserts on PUT.
