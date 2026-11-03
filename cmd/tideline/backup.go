@@ -9,7 +9,6 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
-	"syscall"
 )
 
 // Continuous backups use Litestream (https://litestream.io), which streams
@@ -119,7 +118,7 @@ func runUnderLitestream(log *slog.Logger) (bool, error) {
 	log.Info("starting continuous backups", "replica", redactURL(c.URL), "retention", c.Retention)
 	// -no-expand-env: values are already literal, so a "$" in a path stays a "$".
 	args := []string{bin, "replicate", "-config", cfgPath, "-no-expand-env"}
-	return true, syscall.Exec(bin, args, envv)
+	return true, execReplace(bin, args, envv)
 }
 
 // redactURL drops any credentials embedded in a URL before logging it.

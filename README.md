@@ -50,6 +50,22 @@ TIDELINE_API_SECRET='a-long-random-secret' docker compose up -d
 
 Data lives in the `tideline-data` volume (`/data/tideline.db`).
 
+### Prebuilt releases
+
+Each version tag publishes a container image and binaries:
+
+- **Image:** `ghcr.io/iamgp/nightscout2:latest` (or a version such as `:1.1`),
+  for `linux/amd64` and `linux/arm64`, with Litestream included.
+- **Binaries:** Linux, macOS and Windows on amd64 and arm64, with
+  `checksums.txt`, on the GitHub release page.
+
+While the repository is private, the image is private too: run `docker login
+ghcr.io` with a GitHub token that has `read:packages`, or make the package
+public in its GitHub settings.
+
+To cut a release: `git tag v1.1.0 && git push origin v1.1.0`. Tags with a
+hyphen (`v1.2.0-rc.1`) are published as pre-releases and don't move `latest`.
+
 ### Fly.io
 
 With [flyctl](https://fly.io/docs/flyctl/install/) installed and logged in:
@@ -252,6 +268,7 @@ Tasks are defined in `mise.toml` (run `mise tasks` to list them):
 | `mise run fmt` | Format Go code |
 | `mise run build` | Build a static binary into `bin/` |
 | `mise run docker` | Build the Docker image |
+| `mise run cross` | Check every release target compiles |
 | `mise run deploy:fly` | Deploy to Fly.io |
 | `mise run reset-dev-db` | Delete the dev database |
 
