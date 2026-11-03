@@ -313,16 +313,22 @@ func (s *Server) handleV3Delete(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleV2AuthRequest(w http.ResponseWriter, r *http.Request) {
+	cred := "t:" + r.PathValue("token")
+	if s.checkBlocked(w, r, cred) {
+		return
+	}
 	jwt, p, iat, exp, err := s.auth.IssueJWT(r.Context(), r.PathValue("token"))
 	if err != nil {
 		var bad auth.ErrBadCredentials
 		if errors.As(err, &bad) {
+			s.authFailed(r)
 			writeError(w, http.StatusUnauthorized, "invalid access token")
 			return
 		}
 		writeError(w, http.StatusInternalServerError, "could not issue token")
 		return
 	}
+	s.limiter.Succeeded(cred)
 	groups := [][]string{{"api:*:read"}}
 	if p.CanWrite() {
 		groups = [][]string{{"*"}}

@@ -2,6 +2,7 @@
 package server
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -35,6 +36,15 @@ type Options struct {
 	PushHostAllowed func(host string) bool
 	// PushAllowHTTP permits non-HTTPS push endpoints (tests only).
 	PushAllowHTTP bool
+
+	// ClientIPHeader names a header set by a trusted reverse proxy that
+	// carries the real client IP (e.g. Fly-Client-IP). Empty means use the
+	// connection's address. Only set it when a proxy always overwrites it.
+	ClientIPHeader string
+	// AuthFailureBurst and AuthFailureRefill tune sign-in rate limiting
+	// (defaults: 10 failures, draining one per minute).
+	AuthFailureBurst  int
+	AuthFailureRefill time.Duration
 }
 
 // Server is the Tideline HTTP server.
@@ -45,6 +55,7 @@ type Server struct {
 	settings *settings.Manager
 	alerts   *alerts.Engine
 	hub      *Hub
+	limiter  *authLimiter
 	log      *slog.Logger
 	started  time.Time
 }
@@ -58,6 +69,7 @@ func New(st *store.Store, a *auth.Authenticator, sm *settings.Manager, opts Opti
 	s := &Server{
 		opts: opts, store: st, auth: a, settings: sm,
 		hub: NewHub(), log: opts.Log, started: time.Now(),
+		limiter: newAuthLimiter(cmp.Or(opts.AuthFailureBurst, 10), cmp.Or(opts.AuthFailureRefill, time.Minute)),
 	}
 	s.alerts = alerts.New(st, sm.Get, func(list []alerts.Alert) {
 		s.hub.Publish(Event{"alerts", list})
@@ -196,16 +208,23 @@ const (
 
 func (s *Server) guard(n need, h http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
+		if s.checkBlocked(w, r) {
+			return
+		}
 		p, err := s.auth.Resolve(r)
 		if err != nil {
 			var bad auth.ErrBadCredentials
 			if errors.As(err, &bad) {
+				s.authFailed(r)
 				writeError(w, http.StatusUnauthorized, "invalid credentials")
 				return
 			}
 			s.log.Error("auth failed", "err", err)
 			writeError(w, http.StatusInternalServerError, "auth failed")
 			return
+		}
+		if p != nil { // anonymous requests carry no credential, so nothing is recorded
+			s.limiter.Succeeded(auth.PresentedCredential(r))
 		}
 		ok := false
 		switch n {

@@ -174,6 +174,8 @@ func serve() error {
 		Static:    web.Static(),
 		Sender:    sender,
 		Push:      push,
+
+		ClientIPHeader: clientIPHeader(),
 	})
 	go srv.Alerts().Run(ctx, 30*time.Second)
 
@@ -262,6 +264,24 @@ func loadPush(ctx context.Context, st *store.Store, publicURL string) (*webpush.
 		subject = "https://github.com/iamgp/tideline"
 	}
 	return &webpush.Client{Keys: keys, Subject: subject, HTTP: &http.Client{Timeout: 15 * time.Second}}, nil
+}
+
+// clientIPHeader picks the header a platform proxy uses for the real client
+// address. Only proxies that overwrite the header are trusted.
+func clientIPHeader() string {
+	if h := env("TIDELINE_CLIENT_IP_HEADER"); h != "" {
+		if strings.EqualFold(h, "none") {
+			return ""
+		}
+		return h
+	}
+	if env("FLY_APP_NAME") != "" {
+		return "Fly-Client-IP"
+	}
+	if env("RAILWAY_ENVIRONMENT_NAME") != "" || env("RAILWAY_ENVIRONMENT") != "" {
+		return "X-Real-IP"
+	}
+	return ""
 }
 
 // detectPublicURL uses TIDELINE_PUBLIC_URL, or the URL the host assigns on

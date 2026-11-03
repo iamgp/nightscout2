@@ -2,11 +2,13 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"strings"
 	"time"
 
+	"github.com/iamgp/tideline/internal/auth"
 	"github.com/iamgp/tideline/internal/settings"
 	"github.com/iamgp/tideline/internal/store"
 )
@@ -88,7 +90,16 @@ func (s *Server) handleStatus(w http.ResponseWriter, r *http.Request) {
 func (s *Server) publicRead() bool { return s.auth.PublicRead() }
 
 func (s *Server) handleVerifyAuth(w http.ResponseWriter, r *http.Request) {
+	if s.checkBlocked(w, r) {
+		return
+	}
 	p, err := s.auth.Resolve(r)
+	var bad auth.ErrBadCredentials
+	if errors.As(err, &bad) {
+		s.authFailed(r)
+	} else if err == nil && p != nil {
+		s.limiter.Succeeded(auth.PresentedCredential(r))
+	}
 	msg := map[string]any{"canRead": false, "canWrite": false, "isAdmin": false, "message": "UNAUTHORIZED", "rolefound": "NOTFOUND"}
 	if err == nil && p != nil {
 		msg = map[string]any{
